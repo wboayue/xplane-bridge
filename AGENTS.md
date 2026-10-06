@@ -26,10 +26,13 @@ Rust edition 2024, MSRV 1.85.
 
 ```
 src/lib.rs        re-exports, crate docs
-src/error.rs      XPlaneError (thiserror)
-src/codec/        pure packet encode/decode + tests.rs
-src/datarefs/     dataref path constants grouped by X-Plane prefix
-src/bridge/       XPlaneBridge trait, Frame, udp.rs implementation, tests.rs
+src/error.rs             XPlaneError (thiserror)
+src/codec/               pure packet encode/decode, EncodeError/DecodeError + tests.rs
+src/datarefs/            Dataref type and constants grouped by X-Plane prefix
+src/commands.rs          Command type and constants
+src/subscriptions.rs     Sub handles, Subscriptions (pure)
+src/frame.rs             Frame, FrameBuilder, Latest (pure)
+src/bridge/              DatarefSource/DatarefSink traits, Stats, udp.rs (XPlaneUdpBridge), tests.rs
 examples/probe.rs
 ```
 
@@ -37,17 +40,19 @@ examples/probe.rs
 
 - **Sync and `std` only.** `std::net::UdpSocket`, non-blocking reads. No tokio, no async traits. If async is ever wanted, it goes behind a feature like realflight-bridge's `rt-tokio`, never in the default build.
 - **Raw simulator units.** Degrees, deg/s, meters in X-Plane's OpenGL local frame (x east, y up, z south). Do not convert to NED/FRD, radians, or `uom` types here; that is the consumer's job.
-- **Never panic on simulator input.** The codec returns `XPlaneError::Malformed` for a bad or truncated packet; `poll` skips it (logged at `debug!`, counted) and keeps draining. No `.unwrap()`/`.expect()` in `src/`; use `?` or a typed error. `examples/` and tests may `expect`.
+- **Never panic on simulator input.** The codec returns `DecodeError` for a bad or truncated packet; `poll` skips it (logged at `debug!`, counted in `Stats`) and keeps draining. `DecodeError` never escapes the bridge. No `.unwrap()`/`.expect()` in `src/`; use `?` or a typed error. `examples/` and tests may `expect`.
 - **Never block the caller.** `poll` drains until `WouldBlock` and returns; `write` is one `send_to`. A control loop at 250 Hz must be able to call both every tick.
+- **Only `bridge/udp.rs` touches the socket.** Index bookkeeping (`Subscriptions`) and merging (`FrameBuilder`) are pure and unit-tested without I/O; don't move that logic into the UDP type.
 - **Codec is pure.** Encode/decode take and return byte slices or arrays; no sockets, no state. Packet layouts are in `design.md`; byte widths (400 for `RREF` paths, 500 for `DREF`) are named constants.
-- **Datarefs are constants, not strings in call sites.** Add new ones to `src/datarefs/` under the module matching their X-Plane path prefix, with a doc comment giving units and sign. Verify the path against `Resources/plugins/DataRefs.txt` before adding it.
+- **Datarefs and commands are constants, not strings in call sites.** Add datarefs to `src/datarefs/` under the module matching their X-Plane path prefix, with a doc comment giving units and sign; commands go in `src/commands.rs`. Verify the path against `Resources/plugins/DataRefs.txt` before adding it.
 - **Dependencies stay minimal.** `thiserror`, `log`. Dev-dependencies for tests (e.g. `approx`) are fine. Anything else needs a reason in the PR.
 - Logging: `log` crate; `info!` for lifecycle (bind, subscribe, drop), `debug!`/`trace!` inside the poll/write path. Nothing printed per tick at `info`.
 
 ## Testing
 
 - Table-driven byte-level tests for every packet type in `src/codec/tests.rs`, including boundary paths (exactly max, one over), empty and truncated replies.
-- Bridge behavior is tested against a loopback `UdpSocket` acting as a fake X-Plane in `src/bridge/tests.rs`. No mocking framework; hand-written fakes.
+- `Subscriptions`, `FrameBuilder`, and `Latest` get plain unit tests, no sockets.
+- Socket behavior is tested against a loopback `UdpSocket` acting as a fake X-Plane in `src/bridge/tests.rs`; the fake replies from a different port than it listens on, as X-Plane does. No mocking framework; hand-written fakes built from `Subscriptions` and `Frame::from_values`.
 - Anything that needs the real simulator is `#[ignore]` with a one-line reason.
 - Name tests after the behavior they protect (`merges_drained_packets`), not the function.
 - Floats: `approx::assert_relative_eq!`.
