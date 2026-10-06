@@ -18,12 +18,12 @@ Initial design, written before the first line of code. Items marked **verify** a
 
 ## Protocol summary
 
-X-Plane listens on UDP `49000` (configurable in **Settings → Network**) and replies to the source address of whichever socket sent the request, so one socket serves both directions. All integers and floats are little-endian; the codec uses `to_le_bytes`/`from_le_bytes` explicitly, never native order. Strings are null-padded to a fixed width.
+X-Plane listens on UDP `49000` (configurable in **Settings → Network**) and replies to the source address and port of whichever socket sent the request, so one socket serves both directions. Replies come *from* port `49001`, not `49000` (confirmed, X-Plane 12, same host), so the bridge must never `connect()` its socket or filter replies by the address it sends to. All integers and floats are little-endian; the codec uses `to_le_bytes`/`from_le_bytes` explicitly, never native order. Strings are null-padded to a fixed width.
 
 | Packet | Direction | Layout | Notes |
 |---|---|---|---|
 | `RREF` | → X-Plane | `"RREF\0"`, `i32 freq`, `i32 index`, `char[400] path` (413 bytes) | Subscribe `path` at `freq` per second under caller-chosen `index`. `freq = 0` unsubscribes. |
-| `RREF,` | ← X-Plane | `"RREF"` + one byte, then repeated `{ i32 index, f32 value }` | One packet per frame holding every due subscription. Sent at most once per rendered frame regardless of `freq`. The decoder accepts `,` or `\0` as the fifth byte. **verify** which one X-Plane 12 sends, the packet size cap, and whether a large subscription set splits across packets. |
+| `RREF,` | ← X-Plane | `"RREF"` + one byte, then repeated `{ i32 index, f32 value }` | One packet per frame holding every due subscription. Sent at most once per rendered frame regardless of `freq`. X-Plane 12 sends `RREF,` (confirmed); the decoder also accepts `\0` as the fifth byte for safety. Six subscriptions arrive in one 53-byte packet (confirmed). **verify** the packet size cap and whether a set of ~20 splits across packets. |
 | `DREF` | → X-Plane | `"DREF\0"`, `f32 value`, `char[500] path` (509 bytes) | Write one value. Array elements address as `path[i]`. Fire-and-forget; no ack. **verify** that X-Plane converts the float for int datarefs (e.g. `override_throttles`). |
 | `CMND` | → X-Plane | `"CMND\0"`, null-terminated `path` | Trigger a command, e.g. `sim/operation/pause_toggle`. |
 | `BECN` | ← multicast `239.255.1.1:49707` | beacon | Discovery. Out of scope for v1; the caller passes an address. |
@@ -78,9 +78,9 @@ pub trait XPlaneBridge {
 
 ### `XPlaneUdpBridge`
 
-- `connect(addr: SocketAddr) -> Result<Self>` binds an ephemeral local port, sets the socket non-blocking, and stores `addr`. No handshake exists, so "connected" only means the socket is ready. **verify** whether X-Plane honors replies to a non-default source port when the client is on another host.
+- `connect(addr: SocketAddr) -> Result<Self>` binds an ephemeral local port, sets the socket non-blocking, and stores `addr`. No handshake exists, so "connected" only means the socket is ready. X-Plane replies to the ephemeral port (confirmed, same host). **verify** the same holds when the client is on another host.
 - `subscribe` sends one `RREF` per dataref and records `index → Dataref`. Re-subscribing the same dataref reuses its index. `rate_hz` is `i32` to match the wire; negative values are `InvalidRate`.
-- `poll` loops `recv_from` until `WouldBlock`, decoding each `RREF,` packet and merging it into one frame: later packets overwrite earlier values per index. Merging, rather than keeping only the newest packet, keeps values from slower subscriptions and from a subscription set split across packets. Packets that aren't `RREF,` are ignored.
+- `poll` loops `recv_from` until `WouldBlock`, decoding each `RREF,` packet and merging it into one frame: later packets overwrite earlier values per index. Merging, rather than keeping only the newest packet, keeps values from slower subscriptions and from a subscription set split across packets. Packets that aren't `RREF,` are ignored. Replies are accepted from any port on X-Plane's IP, since they arrive from `49001` rather than the `49000` the bridge sends to.
 - A malformed packet is skipped: logged at `debug!`, counted (`XPlaneUdpBridge::malformed_count()`), and draining continues. `poll` errs only on socket errors, so a caller using `?` is never stopped by bad simulator input.
 - On Windows, `recv_from` on a UDP socket reports `ConnectionReset` after a `send_to` reached a closed port (X-Plane not running yet). `poll` treats `ConnectionReset` as "no data" on all platforms. **verify** on Windows; the alternative is disabling `SIO_UDP_CONNRESET`, which needs a non-`std` call.
 - `write` encodes `DREF` and `send_to`s it. One datagram per value; a per-tick batch of eight motor writes is eight datagrams, which is fine on loopback. **verify** that X-Plane applies writes in arrival order within a frame.
@@ -120,7 +120,7 @@ Simulator input never panics the library and never fails `poll`: a malformed pac
 ## Open questions (for the spike)
 
 1. Max `RREF,` packet size and splitting behavior with ~20 subscriptions.
-2. Does `freq` above the frame rate change anything, or is it purely a ceiling?
+2. Does `freq` above the frame rate change anything, or is it purely a ceiling? Partly answered: `freq = 100` gave ~54 packets/s, consistent with a frame-rate ceiling (frame rate not measured); not yet checked whether `freq` below the frame rate is honored exactly.
 3. Exact override set needed for a multirotor: `override_throttles` alone, or also `override_joystick` for the models px4xplane uses.
 4. Whether `ENGN_thro_use` or `ENGN_thro` is the right write target under override (px4xplane source is the reference).
-5. Cross-host behavior: does X-Plane reply to the request's source port, or to a fixed port?
+5. Cross-host behavior: does X-Plane reply to the request's source port, or to a fixed port? Same host: replies go to the request's source port and come from `49001`. Cross-host still open.
