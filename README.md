@@ -20,12 +20,12 @@ It is the X-Plane counterpart of [realflight-bridge](https://github.com/wboayue/
 
 ## Design
 
-* **Synchronous, `std` only.** One `std::net::UdpSocket`, no async runtime. Reads are non-blocking so a fixed-rate control loop never stalls on the simulator.
+* **Sans-I/O.** The whole protocol lives in `Protocol`, which never touches a socket: calls return `Datagram`s to send, received bytes go in through `handle`. `XPlaneUdpBridge` is a thin driver that moves those datagrams over a `std::net::UdpSocket`. Bring your own socket (`socket2`, `mio`, an embedded stack) by driving `Protocol` yourself.
+* **Sync by default, `std` only.** The default build has no async runtime; reads are non-blocking so a fixed-rate control loop never stalls on the simulator. An async driver over `tokio::net::UdpSocket` (same `Protocol`) is planned behind the `rt-tokio` feature once there is a consumer for it.
 * **Raw simulator units.** Values are returned as X-Plane reports them (degrees, degrees per second, OpenGL local frame: x east, y up, z south). Frame and unit conversion belong to the caller.
-* **Small traits.** Consumers depend on `DatarefSource` (subscribe, poll) and `DatarefSink` (write, command); `XPlaneUdpBridge` implements both, and controllers can be tested against fakes without a simulator.
+* **Small traits.** Consumers depend on `DatarefSource` (subscribe, poll) and `DatarefSink` (write, command), not on the driver; controllers can be tested against fakes without a simulator.
 * **Handles, not lookups.** `subscribe` returns a `Sub` handle per dataref; reading a frame is `frame.get(sub)`.
-* **Pure codec.** Packet encoding and decoding are plain functions over byte slices, unit-tested without a socket.
-* **Typed errors.** Fallible calls return `Result<_, XPlaneError>` (`thiserror`); the library never panics on simulator input.
+* **Typed errors.** Fallible calls return `Result<_, XPlaneError>` (`thiserror`); the library never panics on simulator input, and a malformed packet is counted in `stats()` and skipped, never surfaced as an error.
 
 ## Prerequisites
 
@@ -109,9 +109,40 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 ```
 
+### Bringing your own socket
+
+`XPlaneUdpBridge` is a few dozen lines over `Protocol`; any other transport is the same loop. Send each returned `Datagram` to X-Plane, feed each received datagram to `handle`, and call `finish` once per drain:
+
+```rust
+use std::time::Instant;
+
+use xplane_bridge::{Protocol, datarefs};
+
+let mut proto = Protocol::new();
+
+// Calls return the datagram to send.
+let (phi, rref) = proto.subscribe(&datarefs::position::PHI, 100)?;
+my_socket.send(rref.as_bytes())?;
+let dref = proto.write(&datarefs::overrides::THROTTLES, 1.0)?;
+my_socket.send(dref.as_bytes())?;
+
+// Received bytes go in; records for unknown subscriptions are dropped and counted; frames come out.
+while let Some(bytes) = my_socket.try_recv() {
+    proto.handle(bytes, Instant::now());
+}
+if let Some(frame) = proto.finish() {
+    let roll_deg = frame.get(phi);
+}
+
+// On shutdown, tell X-Plane to stop streaming.
+for dg in proto.close() {
+    my_socket.send(dg.as_bytes())?;
+}
+```
+
 ### Timing
 
-X-Plane emits subscribed datarefs once per rendered frame, so the state rate is bounded by the simulator's frame rate (typically 60–120 Hz) regardless of the rate requested. A controller running faster than that gets `None` from `poll` when nothing new has arrived; one running slower gets every packet since the last poll merged into one frame, newest value per dataref. A frame holds only what arrived; `Latest` keeps the last known value of each subscription across frames. The simulator is not stepped by the bridge: there is no lockstep mode, so runs are not deterministic.
+X-Plane emits subscribed datarefs once per rendered frame, so the state rate is bounded by the simulator's frame rate (typically 60–120 Hz) regardless of the rate requested. A controller running faster than that gets `None` from `poll` when nothing new has arrived; one running slower gets every packet since the last poll merged into one frame, newest value per dataref. A frame holds only what arrived, stamped with `received_at` (arrival of its last packet); `Latest` keeps the last known value of each subscription across frames. The simulator is not stepped by the bridge: there is no lockstep mode, so runs are not deterministic.
 
 ### Datarefs
 
@@ -132,7 +163,7 @@ Any other dataref can be used by path with `Dataref::new("sim/...")`, built once
 cargo test
 ```
 
-Codec and bridge logic are covered without a simulator. Tests that need a running X-Plane are `#[ignore]`d; run them with `cargo test -- --ignored` while X-Plane is up.
+The codec and `Protocol` are tested without sockets (bytes in, datagrams out); the UDP driver has a few loopback tests against a fake X-Plane. Tests that need a running X-Plane are `#[ignore]`d; run them with `cargo test -- --ignored` while X-Plane is up.
 
 ## License
 
