@@ -23,7 +23,7 @@ X-Plane listens on UDP `49000` (configurable in **Settings → Network**) and re
 | Packet | Direction | Layout | Notes |
 |---|---|---|---|
 | `RREF` | → X-Plane | `"RREF\0"`, `i32 freq`, `i32 index`, `char[400] path` (413 bytes) | Subscribe `path` at `freq` per second under caller-chosen `index`. `freq = 0` unsubscribes. |
-| `RREF,` | ← X-Plane | `"RREF"` + one byte, then repeated `{ i32 index, f32 value }` | One packet per frame holding every due subscription. Sent at most once per rendered frame regardless of `freq`. X-Plane 12 sends `RREF,` (confirmed); the decoder also accepts `\0` as the fifth byte for safety. Six subscriptions arrive in one 53-byte packet (confirmed). **verify** the packet size cap and whether a set of ~20 splits across packets. |
+| `RREF,` | ← X-Plane | `"RREF"` + one byte, then repeated `{ i32 index, f32 value }` | One packet per frame holding every due subscription. Sent at most once per rendered frame regardless of `freq`. X-Plane 12 sends `RREF,` (confirmed); the decoder also accepts `\0` as the fifth byte for safety. A packet holds at most 183 records (1469 bytes); larger sets spill into additional packets per frame (confirmed). Up to 183 subscriptions arrive in one packet. Duplicate paths under different indices are each sent. |
 | `DREF` | → X-Plane | `"DREF\0"`, `f32 value`, `char[500] path` (509 bytes) | Write one value. Array elements address as `path[i]`. Fire-and-forget; no ack. **verify** that X-Plane converts the float for int datarefs (e.g. `override_throttles`). |
 | `CMND` | → X-Plane | `"CMND\0"`, null-terminated `path` | Trigger a command, e.g. `sim/operation/pause_toggle`. |
 | `BECN` | ← multicast `239.255.1.1:49707` | beacon | Discovery. Out of scope for v1; the caller passes an address. |
@@ -119,7 +119,7 @@ Simulator input never panics the library and never fails `poll`: a malformed pac
 
 ## Open questions (for the spike)
 
-1. Max `RREF,` packet size and splitting behavior with ~20 subscriptions.
+1. ~~Max `RREF,` packet size and splitting behavior with ~20 subscriptions.~~ Answered: cap is 183 records / 1469 bytes per packet; 20 fits in one. Above 183, overflow packets arrive at the same rate as full ones only up to ~200; at 400 the overflow packets came about half as often as full ones (265 vs 132 in 2 s), so some indices may skip frames when split. Not investigated further; merging in `poll` covers it.
 2. Does `freq` above the frame rate change anything, or is it purely a ceiling? Partly answered: `freq = 100` gave ~54 packets/s, consistent with a frame-rate ceiling (frame rate not measured); not yet checked whether `freq` below the frame rate is honored exactly.
 3. Exact override set needed for a multirotor: `override_throttles` alone, or also `override_joystick` for the models px4xplane uses.
 4. Whether `ENGN_thro_use` or `ENGN_thro` is the right write target under override (px4xplane source is the reference).
