@@ -52,44 +52,87 @@ The bridge is sans-I/O: every protocol decision lives in `Protocol`, which never
 
 `codec` knows bytes, `Subscriptions` knows indices, `FrameBuilder` knows merging; none knows the others. `Protocol` is the only part that wires them together. Consumers depend on the traits `DatarefSource`/`DatarefSink` (sync) or `AsyncDatarefSource`/`AsyncDatarefSink` (`rt-tokio`), not on a driver type.
 
-### Names: `Dataref`, `Command`
+### Names: `Dataref`, `Command`, `Rate`
+
+Datarefs carry their value type and access in the type, so reading returns the right Rust type and writing a read-only dataref does not compile.
 
 ```rust
-/// A dataref path plus optional array index. Constants are `const`
-/// (`Cow::Borrowed`); `Dataref::new(impl Into<String>)` builds one at runtime.
-/// `at(i)` returns a copy addressing element `i`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Dataref { path: Cow<'static, str>, index: Option<u16> }
+/// Values a dataref can hold. Sealed. The wire is always `f32`; `Value` converts.
+pub trait Value: Copy + sealed::Sealed {
+    fn to_wire(self) -> f32;
+    fn from_wire(raw: f32) -> Self;
+}
+// f32: identity. i32: rounds (exact up to 2^24). bool: `raw != 0.0`, writes 0.0/1.0.
 
-/// A command path. Same shape and rules as `Dataref`, no index.
+/// Access markers.
+pub enum ReadOnly {}
+pub enum Writable {}
+
+/// A dataref path of value type `T`, scalar or one array element.
+/// Paths are validated once, at construction: a `Dataref` always fits a packet.
+// Clone, Debug, PartialEq, Eq, Hash implemented by hand: derives would bound `T`/`A`.
+pub struct Dataref<T: Value, A = ReadOnly> { path: Cow<'static, str>, index: Option<u16>, _t: PhantomData<fn() -> (T, A)> }
+
+impl<T: Value, A> Dataref<T, A> {
+    /// Runtime path for anything without a constant. `PathTooLong` if it would
+    /// not fit an `RREF` (400 bytes, the tighter of the two limits).
+    pub fn new(path: impl Into<String>) -> Result<Self, XPlaneError>;
+    pub fn path(&self) -> &str;
+}
+
+/// A fixed-length array dataref (`ENGN_thro_use[8]`). Only arrays have `at`.
+pub struct DatarefArray<T: Value, A, const N: usize> { .. }
+
+impl<T: Value, A, const N: usize> DatarefArray<T, A, N> {
+    /// Element `i`, or `None` if `i >= N`.
+    pub fn at(&self, i: usize) -> Option<Dataref<T, A>>;
+    /// All `N` elements in order.
+    pub fn iter(&self) -> impl Iterator<Item = Dataref<T, A>> + '_;
+}
+
+/// A command path, validated like `Dataref`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Command { path: Cow<'static, str> }
+
+/// Requested `RREF` rate. Nonzero: `freq = 0` means unsubscribe on the wire,
+/// so it is only ever sent by `unsubscribe`/`close`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rate(NonZeroU16);
+impl Rate { pub const fn hz(hz: u16) -> Option<Self>; }
 ```
 
-Call sites use constants or values built once at startup, never string literals per tick.
+Constants are built by a crate-private `const` constructor; a unit test checks every constant's path length, so they need no runtime check. Examples:
+
+```rust
+pub const PHI: Dataref<f32> = ..;                              // position, deg
+pub const THRO_USE: DatarefArray<f32, Writable, 8> = ..;        // engine, 0–1
+pub const THROTTLES: Dataref<bool, Writable> = ..;              // overrides
+```
+
+Call sites use constants or values built once at startup, never string literals per tick. Doubles such as `latitude` are `Dataref<f32>`, because `RREF` sends `f32`; that is about a meter of precision, and the doc comment says so. The type and access of a new constant come from `DataRefs.txt`.
 
 ### Handles: `Sub`, `Subscriptions`
 
 ```rust
-/// Handle for one active subscription. Cheap to copy; reads go through it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Sub(i32);
+/// Handle for one active subscription of value type `T`. Cheap to copy; reads go through it.
+// Copy, Debug, PartialEq, Eq, Hash by hand, as for `Dataref`.
+pub struct Sub<T: Value> { index: i32, _t: PhantomData<fn() -> T> }
 
 /// Index bookkeeping only: no encoding, no rates, no datagrams.
 impl Subscriptions {
     /// The existing handle for `dataref`, or a newly allocated one.
-    pub(crate) fn insert(&mut self, dataref: &Dataref) -> Result<Sub, XPlaneError>;
-    /// Remove `sub`, returning its dataref, or `None` if not active.
-    pub(crate) fn remove(&mut self, sub: Sub) -> Option<Dataref>;
+    pub(crate) fn insert<T: Value, A>(&mut self, dataref: &Dataref<T, A>) -> Result<Sub<T>, XPlaneError>;
+    /// Remove `sub`, returning its path, or `None` if not active.
+    pub(crate) fn remove<T: Value>(&mut self, sub: Sub<T>) -> Option<Cow<'static, str>>;
     /// Remove every active subscription (shutdown).
-    pub(crate) fn drain(&mut self) -> impl Iterator<Item = (Sub, Dataref)> + '_;
+    pub(crate) fn drain(&mut self) -> impl Iterator<Item = (i32, Cow<'static, str>)> + '_;
 
-    pub fn is_active(&self, sub: Sub) -> bool;
-    pub fn get(&self, dataref: &Dataref) -> Option<Sub>;
+    pub fn is_active<T: Value>(&self, sub: Sub<T>) -> bool;
+    pub fn get<T: Value, A>(&self, dataref: &Dataref<T, A>) -> Option<Sub<T>>;
 }
 ```
 
-Handles replace path lookup on the read path: `frame.get(sub)` is a map lookup on an `i32`, with no string hashing per tick and no ambiguity between `THRO_USE.at(0)` and `Dataref::new("…/ENGN_thro_use[0]")`. Indices are allocated monotonically and not reused after unsubscribe, so a late packet for an old index is never misread as a new subscription. Mutation is crate-private: handles are only ever allocated by `Protocol`, in the same call that encodes the `RREF`, so a handle and its datagram cannot drift apart. Fakes get handles from a `Protocol`, as the real bridge does; the read-only half is public through `Protocol::subscriptions()`.
+Handles replace path lookup on the read path: `frame.get(sub)` is a map lookup on an `i32`, with no string hashing per tick and no ambiguity between `THRO_USE.at(0)` and `Dataref::new("…/ENGN_thro_use[0]")`. The handle carries the dataref's value type, so `frame.get(sub)` returns `Option<T>` and a `bool` override cannot be read as a throttle. Indices are allocated monotonically and not reused after unsubscribe, so a late packet for an old index is never misread as a new subscription. Mutation is crate-private: handles are only ever allocated by `Protocol`, in the same call that encodes the `RREF`, so a handle and its datagram cannot drift apart. Fakes get handles from a `Protocol`, as the real bridge does; the read-only half is public through `Protocol::subscriptions()`.
 
 ### Core: `Protocol`, `Datagram`
 
@@ -109,11 +152,12 @@ impl Protocol {
 
     // Calls → datagrams. The driver sends what comes back, in order.
     /// Re-subscribing a dataref returns its existing handle at the new rate.
-    pub fn subscribe(&mut self, dataref: &Dataref, rate_hz: i32) -> Result<(Sub, Datagram), XPlaneError>;
+    pub fn subscribe<T: Value, A>(&mut self, dataref: &Dataref<T, A>, rate: Rate) -> Result<(Sub<T>, Datagram), XPlaneError>;
     /// The `freq = 0` datagram, or `None` if `sub` is not active.
-    pub fn unsubscribe(&mut self, sub: Sub) -> Option<Datagram>;
-    pub fn write(&self, dataref: &Dataref, value: f32) -> Result<Datagram, XPlaneError>;
-    pub fn command(&self, command: &Command) -> Result<Datagram, XPlaneError>;
+    pub fn unsubscribe<T: Value>(&mut self, sub: Sub<T>) -> Option<Datagram>;
+    /// Infallible: the path was validated when the `Dataref` was built.
+    pub fn write<T: Value>(&self, dataref: &Dataref<T, Writable>, value: T) -> Datagram;
+    pub fn command(&self, command: &Command) -> Datagram;
     /// `freq = 0` for every active subscription; for shutdown.
     pub fn close(&mut self) -> Vec<Datagram>;
 
@@ -136,55 +180,58 @@ pub struct Stats { pub packets: u64, pub malformed: u64, pub dropped_records: u6
 
 Each call maps to exactly one outgoing datagram (`close` to one per subscription), so methods *return* the datagram instead of queueing it; there is no outbox and no callback. `Protocol` is public: it is the whole protocol for anyone bringing their own socket (`socket2`, `mio`, an embedded stack), and it is what the tests exercise.
 
-`Protocol` is the only place the pure parts meet. `subscribe` checks the rate (negative is `InvalidRate`), asks `Subscriptions` for a handle, and encodes the `RREF`; `unsubscribe` and `close` encode `freq = 0` for what `Subscriptions` removed. `handle` decodes with `codec`, keeps records whose index `Subscriptions` reports active, counts the rest in `Stats::dropped_records`, and pushes the kept ones into `FrameBuilder`.
+`Protocol` is the only place the pure parts meet. `subscribe` asks `Subscriptions` for a handle and encodes the `RREF`; `unsubscribe` and `close` encode `freq = 0` for what `Subscriptions` removed. `handle` decodes with `codec`, keeps records whose index `Subscriptions` reports active, counts the rest in `Stats::dropped_records`, and pushes the kept ones into `FrameBuilder`.
 
 ### Values: `Frame`, `FrameBuilder`, `Latest`
 
 ```rust
-/// Values that arrived in one drain, newest per `Sub`. `received_at` is the
-/// arrival time of the last datagram merged in.
-pub struct Frame { values: HashMap<Sub, f32>, received_at: Instant }
+/// Values that arrived in one drain, newest per subscription. `received_at` is
+/// the arrival time of the last datagram merged in.
+pub struct Frame { values: HashMap<i32, f32>, received_at: Instant }
 
 impl Frame {
-    pub fn get(&self, sub: Sub) -> Option<f32>;
+    /// The value for `sub`, converted to its type, or `None` if it did not arrive.
+    pub fn get<T: Value>(&self, sub: Sub<T>) -> Option<T>;
     pub fn received_at(&self) -> Instant;
-    /// For fakes and tests.
-    pub fn from_values(received_at: Instant, values: impl IntoIterator<Item = (Sub, f32)>) -> Self;
+    /// For fakes and tests: `Frame::empty(t).with(phi, 1.5).with(armed, true)`.
+    pub fn empty(received_at: Instant) -> Self;
+    pub fn with<T: Value>(self, sub: Sub<T>, value: T) -> Self;
 }
 
+/// Crate-private; `Protocol` is its only user.
 impl FrameBuilder {
     /// Fold one packet's records in; later records overwrite earlier ones.
     /// Knows nothing of `Subscriptions`; `Protocol` filters before pushing.
-    pub fn push(&mut self, records: impl Iterator<Item = (Sub, f32)>, at: Instant);
+    pub(crate) fn push(&mut self, records: impl Iterator<Item = (i32, f32)>, at: Instant);
     /// The merged frame, or `None` if nothing was pushed. Resets the builder.
-    pub fn finish(&mut self) -> Option<Frame>;
+    pub(crate) fn finish(&mut self) -> Option<Frame>;
 }
 
 impl Latest {
     pub fn apply(&mut self, frame: &Frame);
     /// Last known value and when it arrived.
-    pub fn get(&self, sub: Sub) -> Option<(f32, Instant)>;
+    pub fn get<T: Value>(&self, sub: Sub<T>) -> Option<(T, Instant)>;
 }
 ```
 
-A `Frame` reports only what arrived; a `Sub` absent from it (rate below poll rate, or a split reply that skipped it) reads `None`. Callers who want held values compose `Latest` on top instead of each writing their own cache. Merging every packet in a drain, rather than keeping the newest, is what keeps slower subscriptions and split replies intact.
+Storage stays raw `f32` keyed by index, as it came off the wire; conversion happens in `get`, where the handle supplies the type. A `Frame` reports only what arrived; a `Sub` absent from it (rate below poll rate, or a split reply that skipped it) reads `None`. Callers who want held values compose `Latest` on top instead of each writing their own cache. Merging every packet in a drain, rather than keeping the newest, is what keeps slower subscriptions and split replies intact.
 
 ### Traits
 
 ```rust
 pub trait DatarefSource {
-    /// Subscribe each dataref at `rate_hz`; handles are returned in input order.
-    fn subscribe(&mut self, datarefs: &[Dataref], rate_hz: i32) -> Result<Vec<Sub>, XPlaneError>;
-    /// Stop streaming. Unknown or already-removed handles are ignored.
-    fn unsubscribe(&mut self, subs: &[Sub]) -> Result<(), XPlaneError>;
+    /// Subscribe one dataref; one call per dataref keeps each handle's type.
+    fn subscribe<T: Value, A>(&mut self, dataref: &Dataref<T, A>, rate: Rate) -> Result<Sub<T>, XPlaneError>;
+    /// Stop streaming. An unknown or already-removed handle is ignored.
+    fn unsubscribe<T: Value>(&mut self, sub: Sub<T>) -> Result<(), XPlaneError>;
     /// Drain everything that arrived; `None` if nothing did. Never blocks.
     fn poll(&mut self) -> Result<Option<Frame>, XPlaneError>;
     fn stats(&self) -> Stats;
 }
 
 pub trait DatarefSink {
-    /// One `DREF`. Returns once the datagram is handed to the OS.
-    fn write(&mut self, dataref: &Dataref, value: f32) -> Result<(), XPlaneError>;
+    /// One `DREF`. Only `Writable` datarefs compile. Errs only on I/O.
+    fn write<T: Value>(&mut self, dataref: &Dataref<T, Writable>, value: T) -> Result<(), XPlaneError>;
     /// One `CMND`.
     fn command(&mut self, command: &Command) -> Result<(), XPlaneError>;
 }
@@ -196,8 +243,8 @@ The async twins (`rt-tokio`) have the same methods as `async fn`, plus one the s
 
 ```rust
 pub trait AsyncDatarefSource {
-    async fn subscribe(&mut self, datarefs: &[Dataref], rate_hz: i32) -> Result<Vec<Sub>, XPlaneError>;
-    async fn unsubscribe(&mut self, subs: &[Sub]) -> Result<(), XPlaneError>;
+    async fn subscribe<T: Value, A>(&mut self, dataref: &Dataref<T, A>, rate: Rate) -> Result<Sub<T>, XPlaneError>;
+    async fn unsubscribe<T: Value>(&mut self, sub: Sub<T>) -> Result<(), XPlaneError>;
     /// Drain what has arrived without waiting; same contract as the sync `poll`.
     fn poll(&mut self) -> Result<Option<Frame>, XPlaneError>;
     /// Wait for the next frame. Cancel-safe: dropping the future loses nothing.
@@ -206,12 +253,12 @@ pub trait AsyncDatarefSource {
 }
 
 pub trait AsyncDatarefSink {
-    async fn write(&mut self, dataref: &Dataref, value: f32) -> Result<(), XPlaneError>;
+    async fn write<T: Value>(&mut self, dataref: &Dataref<T, Writable>, value: T) -> Result<(), XPlaneError>;
     async fn command(&mut self, command: &Command) -> Result<(), XPlaneError>;
 }
 ```
 
-`async fn` in traits (edition 2024) is used as is; the traits are for static dispatch, and nothing in the crate needs `dyn`.
+`async fn` in traits (edition 2024) is used as is. The traits are for static dispatch: generic methods already rule out `dyn`, and nothing in the crate needs it.
 
 ### Drivers
 
@@ -222,8 +269,8 @@ A driver is the smallest loop that moves `Datagram`s between a `Protocol` and a 
 pub struct XPlaneUdpBridge { proto: Protocol, sock: std::net::UdpSocket, addr: SocketAddr }
 
 impl DatarefSink for XPlaneUdpBridge {
-    fn write(&mut self, d: &Dataref, v: f32) -> Result<(), XPlaneError> {
-        let dg = self.proto.write(d, v)?;
+    fn write<T: Value>(&mut self, d: &Dataref<T, Writable>, v: T) -> Result<(), XPlaneError> {
+        let dg = self.proto.write(d, v);
         self.sock.send_to(dg.as_bytes(), self.addr)?;
         Ok(())
     }
@@ -270,18 +317,18 @@ Rejected alternatives: a `maybe-async`-style macro emitting both from one source
 Codec errors are separate from bridge errors, so the public bridge error lists only what a bridge call can return.
 
 ```rust
-// codec
-pub enum EncodeError { PathTooLong { len: usize, max: usize } }   // > 400 (RREF) or 500 (DREF) bytes
-pub struct DecodeError { reason: &'static str }                   // bad header or truncated record
+// codec: encoding cannot fail, because paths are validated on construction
+pub enum DecodeError { BadHeader, Truncated { len: usize } }   // `len` not 5 + 8k
 
 // bridge
 pub enum XPlaneError {
-    Io(std::io::Error),            // socket bind/send/recv
-    PathTooLong { len, max },      // From<EncodeError>
-    InvalidRate(i32),              // negative subscription rate
-    TooManySubscriptions,          // index space exhausted (i32, so practically never)
+    Io(std::io::Error),             // socket bind/send/recv
+    PathTooLong { len: usize, max: usize },  // Dataref::new / Command::new only
+    TooManySubscriptions,           // index space exhausted (i32, so practically never)
 }
 ```
+
+Invalid rates and unwritable datarefs are type errors, not runtime errors, so `XPlaneError` has no variant for them. On the per-tick path only `Io` is possible.
 
 `DecodeError` never leaves the bridge: simulator input never panics the library and never fails `poll`.
 
@@ -294,8 +341,8 @@ pub enum XPlaneError {
 
 ## Testing
 
-- `codec/tests.rs`: table-driven byte-level cases for every packet type, including boundary paths (400/500 bytes, one over), empty replies, truncated records, a 183-record reply.
-- `subscriptions.rs`, `frame.rs`: unit tests for index allocation, handle reuse on re-subscribe, no index reuse after unsubscribe, merging across packets, `Latest` hold behavior. No sockets.
+- `codec/tests.rs`: table-driven byte-level cases for every packet type, including boundary paths (exactly 400 bytes; `Dataref::new` rejects one over), empty replies, truncated records, a 183-record reply.
+- `datarefs/`, `frame.rs`, `subscriptions.rs`: unit tests for every constant's path length, `Value` round trips (`i32` rounding, `bool` from nonzero), `DatarefArray::at` bounds, index allocation, handle reuse on re-subscribe, no index reuse after unsubscribe, merging across packets, `Latest` hold behavior. No sockets.
 - `protocol/tests.rs`: the bulk of the behavior tests. Feed `Protocol` byte vectors and assert the returned `Datagram`s byte-for-byte: subscribe/unsubscribe/write/command round trips, malformed input counted and skipped, records for inactive indices dropped and counted, split replies merged by `finish`, `close` emitting one `freq = 0` per active sub. No sockets.
 - `bridge/tests.rs`: a loopback `UdpSocket` as fake X-Plane, replying from a different port than it listens on. Only socket behavior: draining until `WouldBlock`, `ConnectionReset`, datagrams actually sent, unsubscribe on drop. The `rt-tokio` driver gets the same handful under `#[tokio::test]`.
 - `examples/probe.rs` doubles as the manual test: run against X-Plane with a multirotor loaded, confirm attitude signs and that `override_throttles` + `ENGN_thro_use` spin the motors. Anything `#[ignore]`d needs the simulator and says so.

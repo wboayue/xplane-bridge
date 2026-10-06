@@ -24,7 +24,7 @@ It is the X-Plane counterpart of [realflight-bridge](https://github.com/wboayue/
 * **Sync by default, `std` only.** The default build has no async runtime; reads are non-blocking so a fixed-rate control loop never stalls on the simulator. An async driver over `tokio::net::UdpSocket` (same `Protocol`) is planned behind the `rt-tokio` feature once there is a consumer for it.
 * **Raw simulator units.** Values are returned as X-Plane reports them (degrees, degrees per second, OpenGL local frame: x east, y up, z south). Frame and unit conversion belong to the caller.
 * **Small traits.** Consumers depend on `DatarefSource` (subscribe, poll) and `DatarefSink` (write, command), not on the driver; controllers can be tested against fakes without a simulator.
-* **Handles, not lookups.** `subscribe` returns a `Sub` handle per dataref; reading a frame is `frame.get(sub)`.
+* **Typed datarefs and handles.** Each dataref constant carries its value type (`f32`, `i32`, `bool`) and whether it is writable. `subscribe` returns a typed `Sub<T>`, so `frame.get(sub)` returns `Option<T>` with no string lookup; writing a read-only dataref or a wrong-typed value does not compile.
 * **Typed errors.** Fallible calls return `Result<_, XPlaneError>` (`thiserror`); the library never panics on simulator input, and a malformed packet is counted in `stats()` and skipped, never surfaced as an error.
 
 ## Prerequisites
@@ -61,30 +61,27 @@ use std::net::SocketAddr;
 use std::thread;
 use std::time::Duration;
 
-use xplane_bridge::{DatarefSink, DatarefSource, Latest, XPlaneUdpBridge, datarefs};
+use xplane_bridge::{DatarefSink, DatarefSource, Latest, Rate, XPlaneUdpBridge, datarefs};
 
 fn main() -> Result<(), Box<dyn Error>> {
     // X-Plane on this machine, default UDP port.
     let addr: SocketAddr = "127.0.0.1:49000".parse()?;
     let mut bridge = XPlaneUdpBridge::connect(addr)?;
 
-    // Ask X-Plane to stream attitude and body rates at up to 100 Hz
-    // (it sends at most once per simulator frame). Handles come back in order.
-    let subs = bridge.subscribe(&[
-        datarefs::position::PHI,
-        datarefs::position::THETA,
-        datarefs::position::PSI,
-        datarefs::position::P,
-        datarefs::position::Q,
-        datarefs::position::R,
-    ], 100)?;
-    let phi = subs[0];
+    // Ask X-Plane to stream roll and roll rate at up to 100 Hz
+    // (it sends at most once per simulator frame). Each handle is typed:
+    // `Sub<f32>` here, because both datarefs are `Dataref<f32>`.
+    let rate = Rate::hz(100).expect("nonzero rate");
+    let phi = bridge.subscribe(&datarefs::position::PHI, rate)?;
+    let p = bridge.subscribe(&datarefs::position::P, rate)?;
 
     // Take control of the engines from X-Plane's own throttle logic.
-    bridge.write(&datarefs::overrides::THROTTLES, 1.0)?;
+    // `THROTTLES` is `Dataref<bool, Writable>`, so the value is a `bool`.
+    bridge.write(&datarefs::overrides::THROTTLES, true)?;
 
-    // Build per-engine throttle datarefs once, not per tick.
-    let throttles: Vec<_> = (0..4).map(|i| datarefs::engine::THRO_USE.at(i)).collect();
+    // Per-engine throttle datarefs, built once, not per tick.
+    // `THRO_USE` is an 8-element writable `f32` array.
+    let throttles: Vec<_> = datarefs::engine::THRO_USE.iter().take(4).collect();
 
     // Holds the last known value of each subscription between frames.
     let mut latest = Latest::default();
@@ -94,8 +91,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             latest.apply(&frame);
         }
 
-        if let Some((roll_deg, _received_at)) = latest.get(phi) {
-            // ... run the controller on `roll_deg` ...
+        // `latest.get(phi)` is `Option<(f32, Instant)>`.
+        if let (Some((roll_deg, _)), Some((roll_rate_dps, _))) = (latest.get(phi), latest.get(p)) {
+            // ... run the controller on `roll_deg` and `roll_rate_dps` ...
         }
 
         // Fire-and-forget per-engine throttle, 0.0 to 1.0.
@@ -116,14 +114,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 ```rust
 use std::time::Instant;
 
-use xplane_bridge::{Protocol, datarefs};
+use xplane_bridge::{Protocol, Rate, datarefs};
 
 let mut proto = Protocol::new();
 
-// Calls return the datagram to send.
-let (phi, rref) = proto.subscribe(&datarefs::position::PHI, 100)?;
+// Calls return the datagram to send. Only `subscribe` can fail (index space exhausted).
+let (phi, rref) = proto.subscribe(&datarefs::position::PHI, Rate::hz(100).expect("nonzero"))?;
 my_socket.send(rref.as_bytes())?;
-let dref = proto.write(&datarefs::overrides::THROTTLES, 1.0)?;
+let dref = proto.write(&datarefs::overrides::THROTTLES, true);
 my_socket.send(dref.as_bytes())?;
 
 // Received bytes go in; records for unknown subscriptions are dropped and counted; frames come out.
@@ -131,7 +129,7 @@ while let Some(bytes) = my_socket.try_recv() {
     proto.handle(bytes, Instant::now());
 }
 if let Some(frame) = proto.finish() {
-    let roll_deg = frame.get(phi);
+    let roll_deg: Option<f32> = frame.get(phi);
 }
 
 // On shutdown, tell X-Plane to stop streaming.
@@ -146,7 +144,7 @@ X-Plane emits subscribed datarefs once per rendered frame, so the state rate is 
 
 ### Datarefs
 
-Named constants for the datarefs a flight controller needs live in `datarefs`, one module per X-Plane path prefix. The table lists X-Plane path names; constants are the upper-case form (`phi` → `PHI`, `ENGN_thro_use` → `THRO_USE`), except the quaternion `q`, which is `QUATERNION` to avoid clashing with pitch rate `Q`.
+Named constants for the datarefs a flight controller needs live in `datarefs`, one module per X-Plane path prefix. The table lists X-Plane path names; constants are the upper-case form (`phi` → `PHI`, `ENGN_thro_use` → `THRO_USE`), except the quaternion `q`, which is `QUATERNION` to avoid clashing with pitch rate `Q`. Each constant's type gives its value type and access (`Dataref<f32>` read-only, `Dataref<bool, Writable>`, `DatarefArray<f32, Writable, 8>`); arrays are indexed with `at(i)` (`None` out of range) or iterated with `iter()`.
 
 | Module | Dataref paths |
 |---|---|
@@ -155,7 +153,7 @@ Named constants for the datarefs a flight controller needs live in `datarefs`, o
 | `joystick` | `yoke_roll_ratio`, `yoke_pitch_ratio`, `yoke_heading_ratio` (−1 to 1) |
 | `overrides` | `override_throttles`, `override_joystick`, `override_control_surfaces` |
 
-Any other dataref can be used by path with `Dataref::new("sim/...")`, built once at startup. Commands work the same way: constants in `commands`, or `Command::new("sim/...")`. The full list ships with X-Plane in `Resources/plugins/DataRefs.txt`.
+Any other dataref can be used by path with `Dataref::<f32>::new("sim/...")?` (or `Dataref::<i32, Writable>::new`, etc.), built once at startup; the path length is checked there, so writes never fail on it. Commands work the same way: constants in `commands`, or `Command::new("sim/...")`. The full list ships with X-Plane in `Resources/plugins/DataRefs.txt`.
 
 ## Testing
 
