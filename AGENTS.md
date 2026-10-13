@@ -8,6 +8,8 @@ A small sans-I/O, sync Rust library that talks X-Plane's UDP dataref protocol (`
 
 Status: pre-release. The crate skeleton may not exist yet; `design.md` is the spec until it does.
 
+Design against the consumer, not speculatively. Before adding API, check stable-flight's open issues for the X-Plane backend (#351 backend, #352 mission demo, #89) and the ones that touch host timing or state (#79 sensor synthesis, #302/#309 stalls and reconnects): `gh issue list -R wboayue/stable-flight`. Its `StateSource`/`Actuator` traits and `RealTimeRunner` are sync, which is why this crate is.
+
 ## Commands
 
 ```bash
@@ -18,7 +20,13 @@ cargo run --example probe -- --host 127.0.0.1:49000   # spike/manual check again
 cargo fmt
 cargo clippy --all-targets -- -D warnings
 cargo doc --no-deps                 # keep rustdoc warning-free
+
+# check a dataref path, type, writability, units (X-Plane 12 via Steam on macOS)
+awk -F'\t' '$1 == "sim/flightmodel/position/P"' \
+  ~/Library/Application\ Support/Steam/steamapps/common/X-Plane\ 12/Resources/plugins/DataRefs.txt
 ```
+
+Reading `DataRefs.txt` needs no running simulator; only behavior (rates, reloads, write order) does. Use the X-Plane 12 file, not a neighboring X-Plane 11 install.
 
 Rust edition 2024, MSRV 1.85.
 
@@ -70,7 +78,8 @@ examples/probe.rs
 
 ## Commits and PRs
 
-- Concise imperative subjects; reference issues as `(#n)`.
+- Concise imperative subjects; reference issues as `(#n)`. Issues in stable-flight are `wboayue/stable-flight#n`; a bare `#n` links to this repo.
+- Pass PR bodies with `gh pr create --body-file`; inline heredocs break on apostrophes.
 - No AI attribution lines or footers in commits or PRs.
 - American English spelling in prose, docs, comments, and commit messages.
 - Before a PR: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo doc --no-deps` all clean.
