@@ -5,8 +5,8 @@ Initial design, written before the first line of code. This document states what
 ## Goals
 
 - Give an external flight controller a thin link to X-Plane over its built-in UDP protocol: read datarefs every simulator frame, write datarefs every control tick.
-- Run on macOS, Windows, and Linux with only `std` networking in the default build. No plugin inside X-Plane; no async runtime unless the `rt-tokio` feature is enabled.
-- Implement the protocol once, sans-I/O, so the sync driver and the optional async driver are thin shells over the same logic ([Drivers](#drivers)).
+- Run on macOS, Windows, and Linux with only `std` networking. No plugin inside X-Plane, no async runtime.
+- Implement the protocol once, sans-I/O, so the driver is a thin shell and another transport is another shell, not a fork ([Driver](#driver)).
 - Be testable without a simulator: the protocol core is pure, and consumers depend on small traits they can fake.
 - Stay simulator-honest: report values in X-Plane's own units and frames. Conversion to a controller's conventions is the caller's job (for Stable Flight, the `stable-flight-sitl-xplane` backend).
 
@@ -16,7 +16,7 @@ Initial design, written before the first line of code. This document states what
 - Sensor emulation (IMU noise, GPS, baro). The bridge returns ground truth; sensor models belong upstream.
 - Plugin-side code, the X-Plane 12.1 REST/WebSocket API, multiplayer, or the legacy `DATA` output rows. They can be added behind the same traits later if a need appears.
 - Frame/unit conversion, `uom` types. Possibly a feature later, as in realflight-bridge; not in v1.
-- An async driver in v1. The design supports one ([Drivers](#drivers)), but it is only added once a real async consumer exists (a telemetry or GCS tool, not the flight backend).
+- An async driver. The consumer is sync: Stable Flight's `StateSource`/`Actuator` traits are plain `fn`s, and `RealTimeRunner` paces a thread with `thread::sleep`. Its open issues for this backend (stable-flight #351, #352, #89) keep that shape. An async user drives the public `Protocol` from their own socket ([Why sans-I/O](#why-sans-io)).
 
 ## Protocol
 
@@ -47,10 +47,9 @@ The bridge is sans-I/O: every protocol decision lives in `Protocol`, which never
 | `Subscriptions` | `subscriptions.rs` | Allocate indices; track active `Sub` ↔ `Dataref` | none |
 | `Frame`, `FrameBuilder`, `Latest` | `frame.rs` | Merge records from one drain; optionally hold values across frames | none |
 | `Protocol` | `protocol/` | Compose the above: calls → `Datagram`s, received bytes → `Frame`s, `Stats` | none |
-| traits, `XPlaneUdpBridge` | `bridge/mod.rs`, `bridge/udp.rs` | Sync driver: `std::net::UdpSocket` around a `Protocol` | socket |
-| async traits, `tokio::XPlaneUdpBridge` | `bridge/tokio.rs` | Async driver (`rt-tokio`): `tokio::net::UdpSocket` around the same `Protocol` | socket |
+| traits, `XPlaneUdpBridge` | `bridge/mod.rs`, `bridge/udp.rs` | Driver: `std::net::UdpSocket` around a `Protocol` | socket |
 
-`codec` knows bytes, `Subscriptions` knows indices, `FrameBuilder` knows merging; none knows the others. `Protocol` is the only part that wires them together. Consumers depend on the traits `DatarefSource`/`DatarefSink` (sync) or `AsyncDatarefSource`/`AsyncDatarefSink` (`rt-tokio`), not on a driver type.
+`codec` knows bytes, `Subscriptions` knows indices, `FrameBuilder` knows merging; none knows the others. `Protocol` is the only part that wires them together. Consumers depend on the traits `DatarefSource`/`DatarefSink`, not on the driver type.
 
 ### Names: `Dataref`, `Command`, `Rate`
 
@@ -109,7 +108,7 @@ pub const THRO_USE: DatarefArray<f32, Writable, 8> = ..;        // engine, 0–1
 pub const THROTTLES: Dataref<bool, Writable> = ..;              // overrides
 ```
 
-Call sites use constants or values built once at startup, never string literals per tick. Doubles such as `latitude` are `Dataref<f32>`, because `RREF` sends `f32`; that is about a meter of precision, and the doc comment says so. The type and access of a new constant come from `DataRefs.txt`.
+Call sites use constants or values built once at startup, never string literals per tick. Doubles such as `latitude` are `Dataref<f32>`, because `RREF` sends `f32`. At 47° latitude one `f32` step is about 0.4 m, too coarse for position hold or differentiating velocity, so position for control comes from local `x`/`y`/`z` (small values, sub-millimeter steps near the origin); lat/lon are for display and for anchoring the origin ([Relationship to Stable Flight](#relationship-to-stable-flight)). Doc comments on `f64` datarefs state the precision. The type and access of a new constant come from `DataRefs.txt`.
 
 ### Handles: `Sub`, `Subscriptions`
 
@@ -118,14 +117,17 @@ Call sites use constants or values built once at startup, never string literals 
 // Copy, Debug, PartialEq, Eq, Hash by hand, as for `Dataref`.
 pub struct Sub<T: Value> { index: i32, _t: PhantomData<fn() -> T> }
 
-/// Index bookkeeping only: no encoding, no rates, no datagrams.
+/// Index bookkeeping only: what is subscribed, under which index, at which rate.
+/// No encoding, no datagrams.
 impl Subscriptions {
-    /// The existing handle for `dataref`, or a newly allocated one.
-    pub(crate) fn insert<T: Value, A>(&mut self, dataref: &Dataref<T, A>) -> Result<Sub<T>, XPlaneError>;
+    /// The existing handle for `dataref` (its rate updated), or a newly allocated one.
+    pub(crate) fn insert<T: Value, A>(&mut self, dataref: &Dataref<T, A>, rate: Rate) -> Result<Sub<T>, XPlaneError>;
     /// Remove `sub`, returning its path, or `None` if not active.
     pub(crate) fn remove<T: Value>(&mut self, sub: Sub<T>) -> Option<Cow<'static, str>>;
     /// Remove every active subscription (shutdown).
     pub(crate) fn drain(&mut self) -> impl Iterator<Item = (i32, Cow<'static, str>)> + '_;
+    /// Every active subscription, for `resubscribe_all`.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (i32, &str, Rate)> + '_;
 
     pub fn is_active<T: Value>(&self, sub: Sub<T>) -> bool;
     pub fn get<T: Value, A>(&self, dataref: &Dataref<T, A>) -> Option<Sub<T>>;
@@ -160,6 +162,10 @@ impl Protocol {
     pub fn command(&self, command: &Command) -> Datagram;
     /// `freq = 0` for every active subscription; for shutdown.
     pub fn close(&mut self) -> Vec<Datagram>;
+    /// The `RREF` for every active subscription, same indices and rates, so a
+    /// restarted X-Plane streams again and existing handles stay valid. Counts
+    /// in `Stats::resubscribes`.
+    pub fn resubscribe_all(&mut self) -> Vec<Datagram>;
 
     // Received bytes → frames. The driver calls `handle` once per datagram
     // it drained and `finish` once per drain.
@@ -175,12 +181,12 @@ impl Protocol {
 
 /// Counters since `Protocol::new`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Stats { pub packets: u64, pub malformed: u64, pub dropped_records: u64 }
+pub struct Stats { pub packets: u64, pub malformed: u64, pub dropped_records: u64, pub resubscribes: u64 }
 ```
 
 Each call maps to exactly one outgoing datagram (`close` to one per subscription), so methods *return* the datagram instead of queueing it; there is no outbox and no callback. `Protocol` is public: it is the whole protocol for anyone bringing their own socket (`socket2`, `mio`, an embedded stack), and it is what the tests exercise.
 
-`Protocol` is the only place the pure parts meet. `subscribe` asks `Subscriptions` for a handle and encodes the `RREF`; `unsubscribe` and `close` encode `freq = 0` for what `Subscriptions` removed. `handle` decodes with `codec`, keeps records whose index `Subscriptions` reports active, counts the rest in `Stats::dropped_records`, and pushes the kept ones into `FrameBuilder`.
+`Protocol` is the only place the pure parts meet. `subscribe` asks `Subscriptions` for a handle and encodes the `RREF`; `unsubscribe` and `close` encode `freq = 0` for what `Subscriptions` removed; `resubscribe_all` re-encodes what `Subscriptions` holds, so `Subscriptions` also keeps each subscription's `Rate`. `handle` decodes with `codec`, keeps records whose index `Subscriptions` reports active, counts the rest in `Stats::dropped_records`, and pushes the kept ones into `FrameBuilder`.
 
 ### Values: `Frame`, `FrameBuilder`, `Latest`
 
@@ -226,6 +232,8 @@ pub trait DatarefSource {
     fn unsubscribe<T: Value>(&mut self, sub: Sub<T>) -> Result<(), XPlaneError>;
     /// Drain everything that arrived; `None` if nothing did. Never blocks.
     fn poll(&mut self) -> Result<Option<Frame>, XPlaneError>;
+    /// Resend every active `RREF` ([Liveness](#liveness)). Handles stay valid.
+    fn resubscribe(&mut self) -> Result<(), XPlaneError>;
     fn stats(&self) -> Stats;
 }
 
@@ -239,33 +247,14 @@ pub trait DatarefSink {
 
 An actuator-only component takes `impl DatarefSink`; a state estimator takes `impl DatarefSource`. `XPlaneUdpBridge` implements both. A fake source is a `Protocol` plus a queue of `Frame`s.
 
-The async twins (`rt-tokio`) have the same methods as `async fn`, plus one the sync side cannot offer:
+The traits are for static dispatch: generic methods already rule out `dyn`, and nothing in the crate needs it.
+
+### Driver
+
+A driver is the smallest loop that moves `Datagram`s between a `Protocol` and a socket. It contains no protocol logic.
 
 ```rust
-pub trait AsyncDatarefSource {
-    async fn subscribe<T: Value, A>(&mut self, dataref: &Dataref<T, A>, rate: Rate) -> Result<Sub<T>, XPlaneError>;
-    async fn unsubscribe<T: Value>(&mut self, sub: Sub<T>) -> Result<(), XPlaneError>;
-    /// Drain what has arrived without waiting; same contract as the sync `poll`.
-    fn poll(&mut self) -> Result<Option<Frame>, XPlaneError>;
-    /// Wait for the next frame. Cancel-safe: dropping the future loses nothing.
-    async fn next_frame(&mut self) -> Result<Frame, XPlaneError>;
-    fn stats(&self) -> Stats;
-}
-
-pub trait AsyncDatarefSink {
-    async fn write<T: Value>(&mut self, dataref: &Dataref<T, Writable>, value: T) -> Result<(), XPlaneError>;
-    async fn command(&mut self, command: &Command) -> Result<(), XPlaneError>;
-}
-```
-
-`async fn` in traits (edition 2024) is used as is. The traits are for static dispatch: generic methods already rule out `dyn`, and nothing in the crate needs it.
-
-### Drivers
-
-A driver is the smallest loop that moves `Datagram`s between a `Protocol` and a socket. The sync and async drivers differ only in the socket type and the `.await`s; neither contains protocol logic.
-
-```rust
-// bridge/udp.rs (default build)
+// bridge/udp.rs
 pub struct XPlaneUdpBridge { proto: Protocol, sock: std::net::UdpSocket, addr: SocketAddr }
 
 impl DatarefSink for XPlaneUdpBridge {
@@ -288,29 +277,33 @@ impl DatarefSource for XPlaneUdpBridge {
         }
     }
 }
-
-// bridge/tokio.rs (feature = "rt-tokio"): identical shape over tokio::net::UdpSocket.
-// `poll` uses `try_recv_from`; `next_frame` loops `recv_from(..).await` + `handle`
-// until `finish()` is `Some`.
 ```
 
-Socket rules, shared by both drivers:
+Socket rules:
 
 - `connect(addr: SocketAddr) -> Result<Self>` binds an ephemeral local port, sets the socket non-blocking, and stores `addr`. No handshake exists, so "connected" only means the socket is ready. The socket is never `connect()`ed, and replies are accepted from any port on `addr`'s IP, since they come from `49001` ([Protocol](#protocol)).
 - Every other call is one `Protocol` call plus a `send_to` per returned datagram. Eight motor writes per tick are eight datagrams, which is fine on loopback.
 - `poll` errs only on socket errors; malformed datagrams are `Protocol`'s concern (counted, logged at `debug!`, skipped).
-- `is_no_data` (in `bridge/mod.rs`, used by both drivers) treats `WouldBlock` and `ConnectionReset` as "drained". On Windows `ConnectionReset` follows a `send_to` that hit a closed port (X-Plane not running yet). **verify** on Windows; the alternative, disabling `SIO_UDP_CONNRESET`, needs a non-`std` call.
-- `Drop` sends `Protocol::close()` so X-Plane stops streaming to a dead port. Send errors are logged and ignored; `Drop` never panics. The async driver cannot `.await` in `Drop`, so it uses `try_send_to`, best effort.
+- `is_no_data` (in `bridge/mod.rs`) treats `WouldBlock` and `ConnectionReset` as "drained". On Windows `ConnectionReset` follows a `send_to` that hit a closed port (X-Plane not running yet). **verify** on Windows; the alternative, disabling `SIO_UDP_CONNRESET`, needs a non-`std` call.
+- `Drop` sends `Protocol::close()` so X-Plane stops streaming to a dead port. Send errors are logged and ignored; `Drop` never panics. `Drop` does not release overrides: it does not know which the caller set ([Relationship to Stable Flight](#relationship-to-stable-flight)).
 
 #### Why sans-I/O
 
-This is the split `rustls` (`read_tls`/`write_tls`) and `quinn-proto`/`quinn` use. Compared with realflight-bridge's `async_impl.rs` files, which duplicate each bridge's logic for the async runtime:
+This is the split `rustls` (`read_tls`/`write_tls`) and `quinn-proto`/`quinn` use. With one driver it still pays for itself:
 
-- Protocol logic exists once and has one test suite; the drivers are too small to diverge.
-- `Protocol` tests need no sockets; driver tests are a few loopback smoke tests each.
-- A third transport (the 12.1 WebSocket API, a pcap replayer, an in-process fake X-Plane for CI) is another driver, not another fork.
+- `Protocol` tests need no sockets and assert datagrams byte-for-byte; driver tests are a few loopback smoke tests.
+- Another transport (the 12.1 WebSocket API, a pcap replayer, an in-process fake X-Plane for CI, a tokio socket) is another small driver over the public `Protocol`, not a fork. realflight-bridge's `async_impl.rs` files, which duplicate each bridge's logic for the async runtime, are the fork this avoids.
 
-Rejected alternatives: a `maybe-async`-style macro emitting both from one source (hides control flow, still mixes I/O with logic); an async-only core with `block_on` in a sync shim (tokio in the default build, a runtime inside a 250 Hz loop); sync-only with `spawn_blocking` for async users (works as a stopgap, costs a thread and a channel per bridge).
+Rejected alternatives: shipping an async driver behind a feature now (no consumer; Stable Flight's host stack is sync, see [Non-goals](#non-goals)); a `maybe-async`-style macro emitting sync and async from one source (hides control flow, mixes I/O with logic); an async-only core with `block_on` in a sync shim (a runtime inside a 250 Hz loop).
+
+### Liveness
+
+UDP has no connection, so the bridge cannot tell a restarted X-Plane, a paused one, and a slow frame apart; all three read as `poll` returning `None`. It reports facts and leaves the policy to the caller:
+
+- **Silence.** `Frame::received_at` (or `Latest`) gives the age of the newest state. The caller picks a timeout.
+- **Restart.** A restarted X-Plane has forgotten every `RREF`. After a silence, the caller calls `resubscribe` (repeating it while silent is harmless: same indices, same rates). `Stats::resubscribes` counts them, so a consumer can report reconnects (stable-flight #309). Whether subscriptions also survive an aircraft or scenery reload: **verify**.
+- **Pause.** `sim/time/paused` (`int` boolean, read-only, so `Dataref<bool>`) distinguishes a paused simulator, including the pause on focus loss, from a dead one. A pause is a host stall to the controller (stable-flight #302): nothing in it is flight data.
+- **Simulator time.** `sim/time/total_running_time_sec` (`float`, seconds) stamps state in simulator time, independent of arrival jitter (stable-flight #89, #81). It is `f32`: 1 ms steps hold for about 4.6 hours of running time.
 
 ### Errors
 
@@ -337,27 +330,35 @@ Invalid rates and unwritable datarefs are type errors, not runtime errors, so `X
 - State rate is capped at X-Plane's frame rate ([Protocol](#protocol)), typically 60–120 Hz. A 250 Hz controller gets `None` from `poll` on most ticks; `Latest` or the caller holds values in between. The bridge does not interpolate.
 - State age is one frame plus loopback latency; `Frame::received_at` lets callers measure it.
 - The flight model runs several physics steps per frame (**Settings → General → Flight models per frame**); writes land at frame boundaries, so actuator latency is also up to one frame.
-- The simulator pauses when it loses focus unless that setting is disabled, and `poll` then returns `None` indefinitely. The bridge does not detect this; callers that care should watch `received_at`.
+- The simulator pauses when it loses focus unless that setting is disabled, and `poll` then returns `None` indefinitely. See [Liveness](#liveness).
+- Frame-rate state quantizes anything measured from it. At 60 fps a period or delay is known to about 17 ms: for a relay-tuner oscillation (stable-flight #310, Tu 40–70 ms) that is a quarter to a third of a period. Raising the frame rate, not the subscription rate, is the fix.
 
 ## Testing
 
 - `codec/tests.rs`: table-driven byte-level cases for every packet type, including boundary paths (exactly 400 bytes; `Dataref::new` rejects one over), empty replies, truncated records, a 183-record reply.
 - `datarefs/`, `frame.rs`, `subscriptions.rs`: unit tests for every constant's path length, `Value` round trips (`i32` rounding, `bool` from nonzero), `DatarefArray::at` bounds, index allocation, handle reuse on re-subscribe, no index reuse after unsubscribe, merging across packets, `Latest` hold behavior. No sockets.
-- `protocol/tests.rs`: the bulk of the behavior tests. Feed `Protocol` byte vectors and assert the returned `Datagram`s byte-for-byte: subscribe/unsubscribe/write/command round trips, malformed input counted and skipped, records for inactive indices dropped and counted, split replies merged by `finish`, `close` emitting one `freq = 0` per active sub. No sockets.
-- `bridge/tests.rs`: a loopback `UdpSocket` as fake X-Plane, replying from a different port than it listens on. Only socket behavior: draining until `WouldBlock`, `ConnectionReset`, datagrams actually sent, unsubscribe on drop. The `rt-tokio` driver gets the same handful under `#[tokio::test]`.
+- `protocol/tests.rs`: the bulk of the behavior tests. Feed `Protocol` byte vectors and assert the returned `Datagram`s byte-for-byte: subscribe/unsubscribe/write/command round trips, malformed input counted and skipped, records for inactive indices dropped and counted, split replies merged by `finish`, `close` emitting one `freq = 0` per active sub, `resubscribe_all` re-emitting each active `RREF` at its current rate and none for removed subs. No sockets.
+- `bridge/tests.rs`: a loopback `UdpSocket` as fake X-Plane, replying from a different port than it listens on. Only socket behavior: draining until `WouldBlock`, `ConnectionReset`, datagrams actually sent, unsubscribe on drop.
 - `examples/probe.rs` doubles as the manual test: run against X-Plane with a multirotor loaded, confirm attitude signs and that `override_throttles` + `ENGN_thro_use` spin the motors. Anything `#[ignore]`d needs the simulator and says so.
 
 ## Relationship to Stable Flight
 
-`stable-flight-sitl-xplane` will hold an `XPlaneUdpBridge` in a `Vehicle`: `actuate` uses it as a `DatarefSink` for motor and surface datarefs; `estimate_state` uses it as a `DatarefSource`, applies frames to a `Latest`, and converts from degrees and the OpenGL local frame (x east, y up, z south) to the core's NED/FRD contract. Because there is no lockstep, it runs under the existing `RealTimeRunner`. That crate depends on this one and on `stable-flight`; this crate depends on neither.
+`stable-flight-sitl-xplane` will hold an `XPlaneUdpBridge` in a `Vehicle`: `actuate` uses it as a `DatarefSink` for motor and surface datarefs; `state` (`StateSource`) uses it as a `DatarefSource`, applies frames to a `Latest`, and converts from degrees and the OpenGL local frame (x east, y up, z south) to the core's NED/FRD contract. Because there is no lockstep, it runs under the existing `RealTimeRunner`. That crate depends on this one and on `stable-flight`; this crate depends on neither.
+
+What the backend's issues (stable-flight #351, #352, #79, #302, #309) need from this crate, and where the line falls:
+
+- **Position.** Control uses local `x`/`y`/`z` ([Names](#names-dataref-command-rate)). The local origin moves when scenery reloads; the backend detects it from `sim/flightmodel/position/lat_ref`/`lon_ref` (latitude and longitude of the local origin) changing, or a jump in local position, and re-anchors its `GeodeticOrigin` from lat/lon. The mission demo's `--origin` comes from the same lat/lon.
+- **Sensor synthesis.** #79 synthesizes IMU from truth, so the dataref constants cover body rates (`sim/flightmodel/position/P`/`Q`/`R`, deg/s) and world acceleration (`local_ax`/`local_ay`/`local_az`, m/s², OpenGL frame).
+- **Host faults.** The backend maps [Liveness](#liveness) to the core: silence past its timeout triggers `resubscribe` and counts as a reconnect; `paused` and a silence both count as a stall for the autotune.
+- **Shutdown.** Handing control back means writing every override the backend set back to `0`, then dropping the bridge. The bridge's `Drop` only unsubscribes.
 
 ## Open questions
 
-1. When an async consumer appears: whether `rt-tokio` should also offer a `Stream<Item = Frame>` adapter over `next_frame`, and whether the two trait families should be unified behind one trait with an associated future type instead of twins.
-2. Exact override set for a multirotor: `override_throttles` alone, or also `override_joystick` for the models px4xplane uses.
-3. `ENGN_thro_use` or `ENGN_thro` as the write target under override (px4xplane source is the reference).
-4. Whether `freq` below the frame rate is honored exactly.
-5. The **verify** items under [Protocol](#protocol) (cross-host replies, int datarefs, write order) and [Drivers](#drivers) (`ConnectionReset` on Windows).
+1. Exact override set for a multirotor: `override_throttles` alone, or also `override_joystick` for the models px4xplane uses.
+2. Which per-surface deflection datarefs to write under `override_control_surfaces` for the plane and tailsitter models (stable-flight #333, #348, #349). `DataRefs.txt` names `sim/flightmodel/controls/lail1def` as an example.
+3. Whether `freq` below the frame rate is honored exactly.
+4. Whether `RREF` subscriptions survive an aircraft or scenery reload, or only die with the process ([Liveness](#liveness)).
+5. The **verify** items under [Protocol](#protocol) (cross-host replies, int datarefs, write order) and [Driver](#driver) (`ConnectionReset` on Windows).
 
 ## Spike findings
 
@@ -378,3 +379,8 @@ X-Plane 12, same host, 2026-10-05. Python probe sending `RREF` from an ephemeral
   | 400 | 1469 + 277 | 183 + 34 | 197 |
 
   All indices were seen in every run; no malformed packets. At 400, full packets outnumbered overflow packets about 2:1 (265 vs 132) and the two packet shapes carry only 217 records, yet all 400 indices appeared, so X-Plane rotates which records it sends. Not investigated further; the bridge targets ~20 subscriptions.
+
+X-Plane 12 `DataRefs.txt` (header dated 2026-06-24), 2026-10-13:
+
+- **Paths.** `sim/time/paused` (`int` boolean, read-only), `sim/time/total_running_time_sec` (`float`), `sim/flightmodel/position/lat_ref`/`lon_ref` (`float`, the origin of local coordinates), `local_ax/ay/az` (`float`, m/s², OpenGL frame), `P`/`Q`/`R` (`float`, deg/s), `local_x` (`double`), `latitude` (`double`), and `sim/operation/override/override_throttles`, `override_joystick`, `override_control_surfaces` (`int` boolean, writable) all exist.
+- **Throttle target.** `override_throttles` reads "Use ENGN_thro_use to control them", so `ENGN_thro_use` is the write target.
