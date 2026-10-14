@@ -70,3 +70,44 @@ fn iterator_outlives_the_constant() {
     let elements = THRO_USE.iter();
     assert_eq!(elements.count(), 16);
 }
+
+#[test]
+fn clone_equals_original() {
+    let element = THRO_USE.at(3).unwrap();
+    assert_eq!(element.clone(), element);
+    assert_eq!(super::position::PHI.clone(), super::position::PHI);
+    assert_eq!(THRO_USE.clone(), THRO_USE);
+}
+
+#[test]
+fn debug_shows_path_and_index() {
+    let cases = [
+        (
+            format!("{:?}", super::position::PHI),
+            r#"Dataref { path: "sim/flightmodel/position/phi", index: None }"#,
+        ),
+        (
+            format!("{:?}", THRO_USE.at(3).unwrap()),
+            r#"Dataref { path: "sim/flightmodel/engine/ENGN_thro_use", index: Some(3) }"#,
+        ),
+        (
+            format!("{THRO_USE:?}"),
+            r#"DatarefArray { base: "sim/flightmodel/engine/ENGN_thro_use", len: 16 }"#,
+        ),
+    ];
+    for (debug, expected) in cases {
+        assert_eq!(debug, expected);
+    }
+}
+
+#[test]
+fn arrays_compare_and_hash_by_base() {
+    const BY_HAND: DatarefArray<f32, Writable, 16> =
+        DatarefArray::from_static("sim/flightmodel/engine/ENGN_thro_use");
+    const OTHER: DatarefArray<f32, Writable, 16> =
+        DatarefArray::from_static("sim/flightmodel/engine/ENGN_prop");
+    assert_eq!(BY_HAND, THRO_USE);
+    assert_ne!(OTHER, THRO_USE);
+    let arrays: HashSet<_> = [BY_HAND, THRO_USE, OTHER].into_iter().collect();
+    assert_eq!(arrays.len(), 2);
+}

@@ -280,6 +280,21 @@ mod tests {
     }
 
     #[test]
+    fn handles_copy_compare_and_hash_by_index() {
+        use std::collections::HashSet;
+
+        let mut subs = Subscriptions::new();
+        let phi = subs.insert(&position::PHI, hz(10)).unwrap();
+        let theta = subs.insert(&position::THETA, hz(10)).unwrap();
+        #[expect(clippy::clone_on_copy, reason = "exercises Clone")]
+        let cloned = phi.clone();
+        assert_eq!(cloned, phi);
+        let handles: HashSet<_> = [phi, cloned, theta].into_iter().collect();
+        assert_eq!(handles.len(), 2);
+        assert_eq!(format!("{theta:?}"), "Sub(1)");
+    }
+
+    #[test]
     fn errs_when_index_space_exhausted() {
         let mut subs = Subscriptions::new();
         subs.next = i32::MAX;
