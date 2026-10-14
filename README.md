@@ -2,9 +2,10 @@
 
 *A Rust library to interface external flight controllers with the X-Plane simulator.*
 
+[![CI](https://github.com/wboayue/xplane-bridge/actions/workflows/ci.yaml/badge.svg)](https://github.com/wboayue/xplane-bridge/actions/workflows/ci.yaml)
 [![License:MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-
-> **Status:** early development, not yet published. The API below is the target shape and may change before the first release.
+[![crates.io](https://img.shields.io/crates/v/xplane-bridge.svg)](https://crates.io/crates/xplane-bridge)
+[![Documentation](https://img.shields.io/docsrs/xplane-bridge)](https://docs.rs/xplane-bridge/latest/xplane_bridge/index.html)
 
 ## Overview
 
@@ -32,7 +33,6 @@ It is the X-Plane counterpart of [realflight-bridge](https://github.com/wboayue/
 * [X-Plane 12](https://www.x-plane.com/) (X-Plane 11 uses the same UDP protocol but is untested).
 * X-Plane's UDP port, shown under **Settings → Network** (default `49000`). `RREF`/`DREF` need no data-output rows enabled.
 * A multirotor or VTOL model if you are flying one; X-Plane ships no multirotors. The models used by [px4xplane](https://github.com/alireza787b/px4xplane) (Ehang 184, QuadTailsitter, Alia 250) are a good start.
-* If the controller runs on the same machine, keep X-Plane from pausing when its window loses focus, or state stops changing when you switch away (see [Liveness](#liveness)).
 
 ## Requirements
 
@@ -40,17 +40,8 @@ It is the X-Plane counterpart of [realflight-bridge](https://github.com/wboayue/
 
 ## Install
 
-Once published:
-
 ```bash
 cargo add xplane-bridge
-```
-
-Until then, use a git dependency:
-
-```toml
-[dependencies]
-xplane-bridge = { git = "https://github.com/wboayue/xplane-bridge" }
 ```
 
 ## Usage
@@ -164,7 +155,7 @@ With feature `testing`, `testing::FakeXPlane` implements both traits: queue fram
 
 ```toml
 [dev-dependencies]
-xplane-bridge = { git = "https://github.com/wboayue/xplane-bridge", features = ["testing"] }
+xplane-bridge = { version = "0.1", features = ["testing"] }
 ```
 
 ```rust
@@ -203,7 +194,7 @@ UDP has no connection, so the bridge reports facts and leaves policy to you:
 * **Silence.** `received_at` on a frame (or the `Instant` from `Latest::get`) gives the age of the newest state; pick your own timeout.
 * **Restart or late start.** X-Plane forgets every subscription when it restarts, and one that was not running when you subscribed never received them. After a silence, call `resubscribe()`: handles stay valid, and repeating it is harmless. `stats().resubscribes` counts the calls.
 * **Lost subscriptions.** X-Plane can drop some `RREF`s when many arrive at once, so a subscription may never stream while the rest do. Until every handle has a value (`Latest::get` is `Some`), call `resubscribe()` now and then.
-* **Pause.** Subscribe to `datarefs::time::PAUSED` to see whether the simulator is paused. Whether X-Plane keeps streaming while paused is not yet verified; if it doesn't, a pause looks like silence.
+* **Pause.** X-Plane keeps streaming while paused, with frozen values; subscribe to `datarefs::time::PAUSED` to tell a pause from flight. Losing window focus does not pause X-Plane 12.
 * **Shutdown.** Dropping the bridge unsubscribes. Write any overrides you set back to `false` first.
 
 ### Datarefs
