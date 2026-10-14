@@ -1,13 +1,10 @@
 use std::time::{Duration, Instant};
 
 use super::*;
-use crate::codec::test_bytes::{dref, reply, rref};
+use crate::codec::test_bytes::{cmnd, dref, reply, rref};
 use crate::commands;
 use crate::datarefs::{engine, overrides, position};
 use crate::rate::hz;
-
-const PHI: &str = "sim/flightmodel/position/phi";
-const THETA: &str = "sim/flightmodel/position/theta";
 
 fn bytes(datagrams: &[Datagram]) -> Vec<&[u8]> {
     datagrams.iter().map(Datagram::as_bytes).collect()
@@ -17,7 +14,7 @@ fn bytes(datagrams: &[Datagram]) -> Vec<&[u8]> {
 fn subscribe_encodes_rref() {
     let mut proto = Protocol::new();
     let (phi, dg) = proto.subscribe(&position::PHI, hz(100)).unwrap();
-    assert_eq!(dg.as_bytes(), rref(100, 0, PHI));
+    assert_eq!(dg.as_bytes(), rref(100, 0, &position::PHI.path()));
 
     let element = engine::THRO_USE.at(3).unwrap();
     let (_, dg) = proto.subscribe(&element, hz(20)).unwrap();
@@ -28,14 +25,17 @@ fn subscribe_encodes_rref() {
 
     let (again, dg) = proto.subscribe(&position::PHI, hz(5)).unwrap();
     assert_eq!(again, phi);
-    assert_eq!(dg.as_bytes(), rref(5, 0, PHI));
+    assert_eq!(dg.as_bytes(), rref(5, 0, &position::PHI.path()));
 }
 
 #[test]
 fn unsubscribe_encodes_freq_zero_once() {
     let mut proto = Protocol::new();
     let (phi, _) = proto.subscribe(&position::PHI, hz(100)).unwrap();
-    assert_eq!(proto.unsubscribe(phi).unwrap().as_bytes(), rref(0, 0, PHI));
+    assert_eq!(
+        proto.unsubscribe(phi).unwrap().as_bytes(),
+        rref(0, 0, &position::PHI.path())
+    );
     assert_eq!(proto.unsubscribe(phi), None);
 }
 
@@ -43,7 +43,10 @@ fn unsubscribe_encodes_freq_zero_once() {
 fn write_encodes_dref() {
     let proto = Protocol::new();
     let cases = [
-        (proto.write(&position::PHI, -1.5), dref(-1.5, PHI)),
+        (
+            proto.write(&position::PHI, -1.5),
+            dref(-1.5, &position::PHI.path()),
+        ),
         (
             proto.write(&overrides::THROTTLES, true),
             dref(1.0, "sim/operation/override/override_throttles"),
@@ -61,7 +64,7 @@ fn write_encodes_dref() {
 #[test]
 fn command_encodes_cmnd() {
     let dg = Protocol::new().command(&commands::RESET_FLIGHT);
-    assert_eq!(dg.as_bytes(), b"CMND\0sim/operation/reset_flight\0");
+    assert_eq!(dg.as_bytes(), cmnd(commands::RESET_FLIGHT.path()));
 }
 
 #[test]
@@ -139,7 +142,13 @@ fn close_unsubscribes_exactly_active() {
     let (psi, _) = proto.subscribe(&position::PSI, hz(100)).unwrap();
     proto.unsubscribe(psi);
     let closed = proto.close();
-    assert_eq!(bytes(&closed), [rref(0, 0, PHI), rref(0, 1, THETA)]);
+    assert_eq!(
+        bytes(&closed),
+        [
+            rref(0, 0, &position::PHI.path()),
+            rref(0, 1, &position::THETA.path())
+        ]
+    );
     assert!(!proto.subscriptions().is_active(phi));
     assert!(!proto.subscriptions().is_active(theta));
     assert!(proto.close().is_empty());
@@ -157,7 +166,13 @@ fn resubscribe_resends_active_at_current_rate() {
     proto.subscribe(&position::PHI, hz(50)).unwrap();
     proto.unsubscribe(psi);
     let resent = proto.resubscribe();
-    assert_eq!(bytes(&resent), [rref(50, 0, PHI), rref(100, 1, THETA)]);
+    assert_eq!(
+        bytes(&resent),
+        [
+            rref(50, 0, &position::PHI.path()),
+            rref(100, 1, &position::THETA.path())
+        ]
+    );
     assert_eq!(proto.stats().resubscribes, 2);
 
     proto.handle(&reply(&[(0, 1.0), (1, 2.0)]), Instant::now());

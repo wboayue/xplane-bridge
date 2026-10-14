@@ -5,13 +5,11 @@ use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
 use super::XPlaneUdpBridge;
-use crate::codec::test_bytes::{dref, reply, rref};
+use crate::codec::test_bytes::{cmnd, dref, reply, rref};
 use crate::datarefs::{overrides, position};
 use crate::rate::hz;
 use crate::{DatarefSink, DatarefSource, Latest, commands};
 
-const PHI: &str = "sim/flightmodel/position/phi";
-const THETA: &str = "sim/flightmodel/position/theta";
 const TIMEOUT: Duration = Duration::from_secs(1);
 
 /// A fake X-Plane: requests arrive on one socket, replies leave from another,
@@ -82,21 +80,21 @@ fn sends_each_call_as_one_datagram() {
     let mut bridge = XPlaneUdpBridge::connect(sim.addr()).unwrap();
 
     bridge.subscribe(&position::PHI, hz(100)).unwrap();
-    assert_eq!(sim.recv().0, rref(100, 0, PHI));
+    assert_eq!(sim.recv().0, rref(100, 0, &position::PHI.path()));
     bridge.write(&overrides::THROTTLES, true).unwrap();
     assert_eq!(
         sim.recv().0,
         dref(1.0, "sim/operation/override/override_throttles")
     );
     bridge.command(&commands::PAUSE_TOGGLE).unwrap();
-    assert_eq!(sim.recv().0, b"CMND\0sim/operation/pause_toggle\0");
+    assert_eq!(sim.recv().0, cmnd(commands::PAUSE_TOGGLE.path()));
     let theta = bridge.subscribe(&position::THETA, hz(50)).unwrap();
-    assert_eq!(sim.recv().0, rref(50, 1, THETA));
+    assert_eq!(sim.recv().0, rref(50, 1, &position::THETA.path()));
     bridge.unsubscribe(theta).unwrap();
-    assert_eq!(sim.recv().0, rref(0, 1, THETA));
+    assert_eq!(sim.recv().0, rref(0, 1, &position::THETA.path()));
     bridge.unsubscribe(theta).unwrap();
     bridge.resubscribe().unwrap();
-    assert_eq!(sim.recv().0, rref(100, 0, PHI));
+    assert_eq!(sim.recv().0, rref(100, 0, &position::PHI.path()));
     sim.assert_quiet();
 }
 
@@ -140,7 +138,7 @@ fn drop_unsubscribes_active() {
     }
 
     drop(bridge);
-    assert_eq!(sim.recv().0, rref(0, 0, PHI));
+    assert_eq!(sim.recv().0, rref(0, 0, &position::PHI.path()));
     sim.assert_quiet();
 }
 

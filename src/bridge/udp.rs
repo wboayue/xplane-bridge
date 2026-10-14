@@ -60,7 +60,9 @@ impl XPlaneUdpBridge {
         };
         let sock = UdpSocket::bind(local)?;
         sock.set_nonblocking(true)?;
-        info!("bound {} for X-Plane at {addr}", sock.local_addr()?);
+        if let Ok(local) = sock.local_addr() {
+            info!("bound {local} for X-Plane at {addr}");
+        }
         Ok(Self {
             proto: Protocol::new(),
             sock,
