@@ -33,15 +33,17 @@ Rust edition 2024, MSRV 1.85.
 ## Layout
 
 ```
-src/lib.rs        re-exports, crate docs
-src/error.rs             XPlaneError (thiserror)
-src/codec/               pure packet encode/decode, DecodeError + tests.rs
-src/datarefs/            Dataref type and constants grouped by X-Plane prefix
+src/lib.rs               re-exports; crate docs are README.md (doctested)
+src/error.rs             XPlaneError, PathError (thiserror)
+src/path.rs              Path: the one place path rules live
+src/codec/               pure packet encode/decode, Datagram, DecodeError + tests.rs
+src/datarefs/            Value, Dataref, DatarefArray, constants grouped by X-Plane prefix
 src/commands.rs          Command type and constants
 src/subscriptions.rs     Sub handles, Subscriptions (pure)
 src/frame.rs             Frame, FrameBuilder, Latest (pure)
-src/protocol/            Protocol, Datagram, Stats: sans-I/O core, calls → datagrams, bytes → frames + tests.rs
+src/protocol/            Protocol, Stats: sans-I/O core, calls → datagrams, bytes → frames + tests.rs
 src/bridge/              DatarefSource/DatarefSink traits, udp.rs (driver), tests.rs
+src/testing.rs           FakeXPlane (feature `testing`)
 examples/probe.rs
 ```
 
@@ -59,19 +61,36 @@ examples/probe.rs
 - **Dependencies stay minimal.** `thiserror`, `log`. Dev-dependencies for tests (e.g. `approx`) are fine. Anything else needs a reason in the PR.
 - Logging: `log` crate; `info!` for lifecycle (bind, subscribe, drop), `debug!`/`trace!` inside the poll/write path. Nothing printed per tick at `info`.
 
+## Style
+
+Code:
+- **One job per part.** Each type and module has one responsibility, describable without "and". The table in `design.md` "Architecture" is the map: new code fits a row or adds one.
+- **Compose, don't extend.** New behavior is a new small part, wired in `Protocol` (the only place parts meet) or layered as a wrapper over `DatarefSource`/`DatarefSink`. No mode flags or optional fields bolted onto existing types.
+- **Depend on traits, keep them small.** Consumers and tests take `impl DatarefSource`/`impl DatarefSink`, never `XPlaneUdpBridge`. Anything implementing them must also work wrapped (`impl<B: DatarefSource> DatarefSource for Wrapper<B>`).
+- **One source of truth.** Each rule, constant, and layout lives once: path rules in `Path`, byte widths in `codec`, wire facts in `design.md` "Protocol". A second copy is a signal to extract; a third similar test becomes a table.
+- **Types over checks.** Encode invariants in types (`Writable`, `Rate`, `Sub<T>`) and validate once at construction, not at each use.
+- **Smallest visibility.** `pub(crate)` by default; `pub` only for what a consumer or a second transport needs.
+- **No speculative API.** No parameter, generic, or feature without a consumer asking for it (see "Design against the consumer").
+
+Docs:
+- **Say it once, where it belongs.** `README.md`: usage. `design.md`: rationale and wire facts. Rustdoc: the item's contract. `AGENTS.md`: rules. Elsewhere, link instead of restating.
+- **Concise.** Short sentences in present tense stating what is true; no filler, hedging, or history (that belongs in commits).
+- **Rustdoc adds what the signature doesn't.** One summary line, then only units, sign, frame, errors, and edge cases; never a restatement of the types.
+- **Comments say why, not what.** No comment that restates the code.
+
 ## Testing
 
 - Table-driven byte-level tests for every packet type in `src/codec/tests.rs`, including boundary paths (exactly max, one over), empty and truncated replies.
 - `Subscriptions`, `FrameBuilder`, and `Latest` get plain unit tests, no sockets.
 - `Protocol` carries the bulk of behavior tests in `src/protocol/tests.rs`: bytes in, `Datagram`s out, asserted byte-for-byte. No sockets.
-- Socket behavior is tested against a loopback `UdpSocket` acting as a fake X-Plane in `src/bridge/tests.rs`; the fake replies from a different port than it listens on, as X-Plane does. Keep these to socket concerns (drain, `ConnectionReset`, drop). No mocking framework; hand-written fakes built from `Protocol` and `Frame::empty(t).with(sub, value)`.
+- Socket behavior is tested against a loopback `UdpSocket` acting as a fake X-Plane in `src/bridge/tests.rs`; the fake replies from a different port than it listens on, as X-Plane does. Keep these to socket concerns (drain, `ConnectionReset`, drop). No mocking framework; use `testing::FakeXPlane` (built on `Protocol` and `Frame::empty(t).with(sub, value)`) rather than writing another fake.
 - Anything that needs the real simulator is `#[ignore]` with a one-line reason.
 - Name tests after the behavior they protect (`merges_drained_packets`), not the function.
 - Floats: `approx::assert_relative_eq!`.
 
 ## Docs and releases
 
-- Public items have rustdoc with an example. Keep `README.md` usage in sync with the real API in the same PR.
+- Public items have rustdoc with an example. `README.md` is the crate docs, so its usage compiles as a doctest; change it in the same PR as the API.
 - `CHANGELOG.md` ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)): every user-facing change adds a bullet under `[Unreleased]`; mark breaking changes **Breaking**.
 - Update `design.md` when a **verify** item is confirmed or an open question is answered; don't leave it describing a protocol detail the code contradicts.
 - `Cargo.toml` metadata mirrors realflight-bridge (license MIT, keywords, categories, `include` list). Check `cargo package --list` before a release.
