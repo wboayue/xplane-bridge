@@ -12,6 +12,11 @@ use std::marker::PhantomData;
 use crate::XPlaneError;
 use crate::path::{Path, WirePath};
 
+pub mod engine;
+pub mod joystick;
+pub mod overrides;
+pub mod position;
+pub mod time;
 mod value;
 
 pub use value::Value;
@@ -98,7 +103,6 @@ impl<T: Value, A> Dataref<T, A> {
 
     /// Constructor for constants. Call it only in a `const` item, so an invalid
     /// path fails the build.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by constants (#9)"))]
     pub(crate) const fn from_static(path: &'static str) -> Self {
         Self::from_path(Path::from_static(path), None)
     }
@@ -174,7 +178,6 @@ pub struct DatarefArray<T: Value, A, const N: usize> {
 impl<T: Value, A, const N: usize> DatarefArray<T, A, N> {
     /// Constructor for constants. Call it only in a `const` item, so an invalid
     /// path, `N = 0`, or `N > 65536` fails the build.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by constants (#9)"))]
     pub(crate) const fn from_static(base: &'static str) -> Self {
         Self {
             base: Path::from_static_array(base, N),

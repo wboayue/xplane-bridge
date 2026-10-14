@@ -1,4 +1,10 @@
 //! Command names.
+//!
+//! ```
+//! use xplane_bridge::commands;
+//!
+//! assert_eq!(commands::PAUSE_TOGGLE.path(), "sim/operation/pause_toggle");
+//! ```
 
 use crate::XPlaneError;
 use crate::path::Path;
@@ -40,7 +46,6 @@ impl Command {
 
     /// Constructor for constants. Call it only in a `const` item, so an invalid
     /// path fails the build.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by constants (#9)"))]
     pub(crate) const fn from_static(path: &'static str) -> Self {
         Self {
             path: Path::from_static(path),
@@ -61,15 +66,47 @@ impl Command {
     }
 }
 
+/// Toggles pause; read the state from
+/// [`datarefs::time::PAUSED`](crate::datarefs::time::PAUSED).
+pub const PAUSE_TOGGLE: Command = Command::from_static("sim/operation/pause_toggle");
+/// Resets the flight to its most recent start.
+pub const RESET_FLIGHT: Command = Command::from_static("sim/operation/reset_flight");
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::PathError;
+    use crate::xplane_files;
+
+    /// Every command constant. Add new constants here.
+    const ALL: [Command; 2] = [PAUSE_TOGGLE, RESET_FLIGHT];
 
     #[test]
     fn static_constructor_matches_runtime_constructor() {
-        const PAUSE: Command = Command::from_static("sim/operation/pause_toggle");
-        assert_eq!(PAUSE, Command::new("sim/operation/pause_toggle").unwrap());
+        assert_eq!(
+            PAUSE_TOGGLE,
+            Command::new("sim/operation/pause_toggle").unwrap()
+        );
+    }
+
+    #[test]
+    fn every_constant_passes_path_rules() {
+        for command in ALL {
+            assert!(Path::new(command.path()).is_ok(), "path {}", command.path());
+        }
+    }
+
+    #[test]
+    #[ignore = "needs an X-Plane 12 install at $XPLANE_DIR"]
+    fn constants_match_commands_txt() {
+        let listed = xplane_files::commands();
+        for command in ALL {
+            assert!(
+                listed.iter().any(|c| c == command.path()),
+                "{} is not in Commands.txt",
+                command.path()
+            );
+        }
     }
 
     #[test]
