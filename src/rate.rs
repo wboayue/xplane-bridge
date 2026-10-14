@@ -29,6 +29,10 @@ impl Rate {
             None => None,
         }
     }
+
+    pub(crate) const fn get(self) -> u16 {
+        self.0.get()
+    }
 }
 
 #[cfg(test)]

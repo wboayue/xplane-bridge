@@ -14,41 +14,53 @@ fn padded(path: &str, width: usize) -> Vec<u8> {
     bytes
 }
 
+fn max_path() -> String {
+    "a".repeat(Path::MAX_LEN)
+}
+
 /// A base path whose element `index` is exactly `Path::MAX_LEN` bytes.
 fn longest_base(index: u16) -> String {
     let suffix = format!("[{index}]").len();
     "a".repeat(Path::MAX_LEN - suffix)
 }
 
+/// `(rate in Hz, index, base path, element, expected wire path)`.
+type RrefCase<'a> = (Option<u16>, i32, &'a str, Option<u16>, &'a str);
+
 #[test]
 fn encodes_rref() {
-    let max = "a".repeat(Path::MAX_LEN);
+    let max = max_path();
     let max_base = longest_base(0);
     let max_element = format!("{max_base}[0]");
-    let cases: &[(u16, i32, &str, Option<u16>, &str)] = &[
-        (100, 0, PHI, None, PHI),
-        (0, 7, PHI, None, PHI),
-        (100, -1, PHI, None, PHI),
+    // `None` rate: unsubscribe, sent as `freq = 0`.
+    let cases: &[RrefCase<'_>] = &[
+        (Some(100), 0, PHI, None, PHI),
+        (None, 7, PHI, None, PHI),
+        (Some(100), -1, PHI, None, PHI),
         (
-            50,
+            Some(50),
             3,
             THRO_USE,
             Some(15),
             "sim/flightmodel/engine/ENGN_thro_use[15]",
         ),
-        (1, 1, &max, None, &max),
-        (1, 1, &max_base, Some(0), &max_element),
+        (Some(1), 1, &max, None, &max),
+        (Some(1), 1, &max_base, Some(0), &max_element),
     ];
-    for &(freq, index, base, element, wire) in cases {
+    for &(hz, index, base, element, wire) in cases {
         let base = path(base);
         let expected = [
             b"RREF\0".as_slice(),
-            &i32::from(freq).to_le_bytes(),
+            &i32::from(hz.unwrap_or(0)).to_le_bytes(),
             &index.to_le_bytes(),
             &padded(wire, 400),
         ]
         .concat();
-        let got = rref(freq, index, base.wire(element));
+        let wire_path = base.wire(element);
+        let got = match hz {
+            Some(hz) => subscribe(Rate::hz(hz).unwrap(), index, wire_path),
+            None => unsubscribe(index, wire_path),
+        };
         assert_eq!(got.as_bytes(), expected, "path {wire}");
         assert_eq!(got.as_bytes().len(), 413);
         assert_eq!(got.as_bytes().last(), Some(&0), "path {wire} is terminated");
@@ -57,7 +69,7 @@ fn encodes_rref() {
 
 #[test]
 fn encodes_dref() {
-    let max = "a".repeat(Path::MAX_LEN);
+    let max = max_path();
     let cases: &[(f32, &str, Option<u16>, &str)] = &[
         (-1.5, PHI, None, PHI),
         (0.0, PHI, None, PHI),
@@ -85,13 +97,24 @@ fn encodes_dref() {
 
 #[test]
 fn encodes_cmnd() {
-    let max = "a".repeat(Path::MAX_LEN);
+    let max = max_path();
     for wire in ["sim/operation/pause_toggle", &max] {
         let expected = [b"CMND\0".as_slice(), wire.as_bytes(), b"\0"].concat();
         let got = cmnd(path(wire).wire(None));
         assert_eq!(got.as_bytes(), expected, "path {wire}");
     }
     assert_eq!(cmnd(path(&max).wire(None)).as_bytes().len(), 405);
+}
+
+#[test]
+fn path_too_long_for_its_field_is_sent_empty() {
+    // Unreachable through public API: path rules keep elements within 399 bytes.
+    let max = path(&max_path());
+    let over = max.wire(Some(5));
+    let rref = subscribe(Rate::hz(1).unwrap(), 1, over);
+    assert_eq!(rref.as_bytes().len(), 413);
+    assert!(rref.as_bytes()[13..].iter().all(|&b| b == 0));
+    assert_eq!(cmnd(over).as_bytes(), b"CMND\0\0");
 }
 
 fn reply(records: &[(i32, f32)]) -> Vec<u8> {
@@ -122,6 +145,7 @@ fn decodes_rref_reply() {
                 .collect::<Vec<_>>()
         };
         assert_eq!(bits(&got), bits(records), "{name}");
+        assert_eq!(decode_rref(&bytes).unwrap().len(), records.len(), "{name}");
     }
     assert_eq!(reply(&cases[3].1).len(), 1469);
 }

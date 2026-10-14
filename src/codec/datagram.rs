@@ -1,7 +1,6 @@
 use std::fmt::{self, Write as _};
 
 use super::DREF_LEN;
-use crate::path::WirePath;
 
 /// The largest packet, `DREF`.
 const CAP: usize = DREF_LEN;
@@ -48,41 +47,65 @@ impl fmt::Debug for Datagram {
     }
 }
 
-/// Appends to a datagram's buffer. A write that does not fit is dropped whole;
-/// path rules make every packet fit, so that never happens.
+/// Appends to a zeroed buffer. Nothing written ever spills past its own field.
 pub(super) struct Writer<'a> {
-    buf: &'a mut [u8; CAP],
+    buf: &'a mut [u8],
     len: usize,
 }
 
 impl Writer<'_> {
-    pub(super) fn put(&mut self, bytes: &[u8]) {
+    /// Appends `bytes`, or nothing if they do not fit.
+    pub(super) fn put(&mut self, bytes: &[u8]) -> bool {
         let end = self.len + bytes.len();
-        if let Some(dst) = self.buf.get_mut(self.len..end) {
-            dst.copy_from_slice(bytes);
-            self.len = end;
+        let Some(dst) = self.buf.get_mut(self.len..end) else {
+            return false;
+        };
+        dst.copy_from_slice(bytes);
+        self.len = end;
+        true
+    }
+
+    /// Writes `text` into a field of exactly `width` bytes, null-padded with at
+    /// least one terminator.
+    pub(super) fn put_padded(&mut self, text: impl fmt::Display, width: usize) {
+        self.put_bounded(text, width.saturating_sub(1));
+        self.advance(width);
+    }
+
+    /// Writes `text` and a terminator, taking at most `max` bytes in all.
+    pub(super) fn put_terminated(&mut self, text: impl fmt::Display, max: usize) {
+        let written = self.put_bounded(text, max.saturating_sub(1));
+        self.advance(written + 1);
+    }
+
+    /// Writes `text` within the next `max` bytes without advancing, and returns
+    /// its length. Text that does not fit leaves the field empty, never
+    /// truncated; path rules keep that from happening.
+    fn put_bounded(&mut self, text: impl fmt::Display, max: usize) -> usize {
+        let end = (self.len + max).min(self.buf.len());
+        let Some(dst) = self.buf.get_mut(self.len..end) else {
+            return 0;
+        };
+        let mut field = Writer { buf: dst, len: 0 };
+        if write!(field, "{text}").is_err() {
+            field.buf.fill(0);
+            return 0;
         }
+        field.len
     }
 
-    pub(super) fn put_path(&mut self, path: WirePath<'_>) {
-        // Only fails on overflow, which path rules rule out.
-        let _ = write!(self, "{path}");
-    }
-
-    /// Extends to `len` with the zeros already in the buffer: null padding.
-    pub(super) fn pad_to(&mut self, len: usize) {
-        self.len = self.len.max(len.min(CAP));
+    fn advance(&mut self, n: usize) {
+        self.len = (self.len + n).min(self.buf.len());
     }
 }
 
 impl fmt::Write for Writer<'_> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        let before = self.len;
-        self.put(s.as_bytes());
-        if self.len == before && !s.is_empty() {
-            return Err(fmt::Error);
+        if self.put(s.as_bytes()) {
+            Ok(())
+        } else {
+            Err(fmt::Error)
         }
-        Ok(())
     }
 }
 
@@ -92,21 +115,50 @@ mod tests {
 
     #[test]
     fn equality_ignores_bytes_past_len() {
-        let mut a = Datagram::build(|w| w.put(b"CMND\0"));
-        let b = Datagram::build(|w| w.put(b"CMND\0"));
+        let mut a = Datagram::build(|w| {
+            w.put(b"CMND\0");
+        });
+        let b = Datagram::build(|w| {
+            w.put(b"CMND\0");
+        });
         a.buf[CAP - 1] = 0xFF;
         assert_eq!(a, b);
-        assert_ne!(a, Datagram::build(|w| w.put(b"CMND\0x")));
+        let c = Datagram::build(|w| {
+            w.put(b"CMND\0x");
+        });
+        assert_ne!(a, c);
     }
 
     #[test]
     fn drops_write_that_does_not_fit() {
         let d = Datagram::build(|w| {
-            w.put(&[1; CAP - 1]);
-            w.put(&[2, 2]);
-            w.put(&[3]);
+            assert!(w.put(&[1; CAP - 1]));
+            assert!(!w.put(&[2, 2]));
+            assert!(w.put(&[3]));
         });
         assert_eq!(d.as_bytes().len(), CAP);
         assert_eq!(d.as_bytes().last(), Some(&3));
+    }
+
+    #[test]
+    fn keeps_text_inside_its_field() {
+        type Put = fn(&mut Writer<'_>, &str, usize);
+        let padded: Put = |w, text, width| w.put_padded(text, width);
+        let terminated: Put = |w, text, max| w.put_terminated(text, max);
+        let cases: &[(&str, Put, &str, &[u8])] = &[
+            ("padded fits", padded, "ab", b"ab\0\0|"),
+            ("padded exactly fits", padded, "abc", b"abc\0|"),
+            ("padded too long", padded, "abcd", b"\0\0\0\0|"),
+            ("terminated fits", terminated, "ab", b"ab\0|"),
+            ("terminated exactly fits", terminated, "abc", b"abc\0|"),
+            ("terminated too long", terminated, "abcd", b"\0|"),
+        ];
+        for &(name, put, text, expected) in cases {
+            let d = Datagram::build(|w| {
+                put(w, text, 4);
+                w.put(b"|");
+            });
+            assert_eq!(d.as_bytes(), expected, "{name}");
+        }
     }
 }

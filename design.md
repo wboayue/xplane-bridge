@@ -155,8 +155,8 @@ A handle is only meaningful against frames from the `Protocol` that issued it. I
 
 ```rust
 /// One outgoing UDP payload. Sized for the largest packet (`DREF`, 509 bytes); no heap.
-// PartialEq, Eq by hand over `as_bytes()`, so bytes past `len` never matter.
-#[derive(Clone, Copy, Debug)]
+// PartialEq, Eq, Debug by hand over `as_bytes()`, so bytes past `len` never matter.
+#[derive(Clone, Copy)]
 pub struct Datagram { buf: [u8; 509], len: usize }
 impl Datagram { pub fn as_bytes(&self) -> &[u8]; }
 

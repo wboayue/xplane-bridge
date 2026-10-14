@@ -53,7 +53,7 @@ impl Path {
 /// A path as sent on the wire: `base`, or `base[i]` for an array element.
 ///
 /// Its `Display` is the one place the element suffix is formatted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct WirePath<'a> {
     base: &'a Path,
     index: Option<u16>,
@@ -165,9 +165,15 @@ mod tests {
     }
 
     #[test]
-    fn counts_element_suffix() {
-        for (index, len) in [(0, 3), (9, 3), (10, 4), (99, 4), (100, 5), (65535, 7)] {
-            assert_eq!(element_suffix_len(index), len, "index {index}");
+    fn suffix_len_matches_wire_path() {
+        let base = Path::new("sim/a").unwrap();
+        for index in [0, 9, 10, 99, 100, 65535] {
+            let suffix = base.wire(Some(index)).to_string().len() - base.as_str().len();
+            assert_eq!(
+                element_suffix_len(usize::from(index)),
+                suffix,
+                "index {index}"
+            );
         }
     }
 
