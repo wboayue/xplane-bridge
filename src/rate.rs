@@ -2,8 +2,10 @@ use std::num::NonZeroU16;
 
 /// Requested `RREF` rate, in Hz.
 ///
-/// Nonzero: `freq = 0` means unsubscribe on the wire. X-Plane caps the delivered
-/// rate at its frame rate whatever is asked.
+/// Nonzero: `freq = 0` means unsubscribe on the wire. X-Plane sends at most once
+/// per frame, on the first frame at least `1/hz` after the last send, so the
+/// delivered rate rounds down to whole frames; for every frame, ask for at least
+/// twice the frame rate.
 ///
 /// ```
 /// use xplane_bridge::Rate;

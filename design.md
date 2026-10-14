@@ -1,6 +1,6 @@
 # xplane-bridge design
 
-Initial design, written before the first line of code. This document states what is true; how it was established lives in [Spike findings](#spike-findings). Items marked **verify** are still assumptions; when one is confirmed, update the fact where it is stated and add the evidence to the findings.
+This document states what is true; how it was established lives in [Spike findings](#spike-findings). Items marked **verify** are still assumptions; when one is confirmed, update the fact where it is stated and add the evidence to the findings.
 
 ## Goals
 
@@ -22,15 +22,15 @@ Initial design, written before the first line of code. This document states what
 
 This section is the single source for wire-level facts; later sections refer to it.
 
-**Transport.** X-Plane listens on UDP `49000` (configurable in **Settings → Network**). It replies to the source address and port of the socket that sent the request, so one socket serves both directions. Replies come *from* port `49001`, not `49000`. Cross-host behavior: **verify**.
+**Transport.** X-Plane listens on UDP `49000` (configurable in **Settings → Network**). It replies to the source address and port of the socket that sent the request, so one socket serves both directions. Replies come *from* port `49001`, not `49000`. Requests to the host's LAN address work like loopback; from a second host: **verify** (#34).
 
 **Encoding.** Integers and floats are little-endian. Strings are null-padded to a fixed width.
 
 | Packet | Direction | Layout | Notes |
 |---|---|---|---|
 | `RREF` | → X-Plane | `"RREF\0"`, `i32 freq`, `i32 index`, `char[400] path` (413 bytes) | Subscribe `path` at `freq` per second under caller-chosen `index`. `freq = 0` unsubscribes. The same path under different indices is sent once per index. Whether a 400-byte path with no terminator is accepted is untested, so the bridge caps paths at 399. |
-| `RREF,` | ← X-Plane | `"RREF,"`, then repeated `{ i32 index, f32 value }` | Holds at most 183 records (1469 bytes). Up to 183 subscriptions arrive in one packet per frame; larger sets spill into extra packets, and not every record may arrive every frame. Rate is capped at the simulator frame rate whatever `freq` asks for. |
-| `DREF` | → X-Plane | `"DREF\0"`, `f32 value`, `char[500] path` (509 bytes) | Write one value. Array elements address as `path[i]`. Fire-and-forget; no ack. An int dataref (e.g. `override_throttles`) takes the float value converted ([Spike findings](#spike-findings)). **verify** that writes apply in arrival order within a frame. |
+| `RREF,` | ← X-Plane | `"RREF,"`, then repeated `{ i32 index, f32 value }` | Holds at most 183 records (1469 bytes). Up to 183 subscriptions arrive in one packet per frame; larger sets spill into extra packets, and not every record may arrive every frame. A record goes out at most once per frame, on the first frame at least `1/freq` after its last send, so the delivered rate rounds down to whole frames (at 120 fps, `freq = 100` arrives at 60 Hz); every frame needs `freq` of at least twice the frame rate. Streaming continues while paused. |
+| `DREF` | → X-Plane | `"DREF\0"`, `f32 value`, `char[500] path` (509 bytes) | Write one value. Array elements address as `path[i]`. Fire-and-forget; no ack. An int dataref (e.g. `override_throttles`) takes the float value converted. Writes arriving within one frame apply in arrival order, so the last write to a dataref wins; an override flag and its value sent together take effect in either order. |
 | `CMND` | → X-Plane | `"CMND\0"`, null-terminated `path` | Trigger a command, e.g. `sim/operation/pause_toggle`. |
 | `BECN` | ← multicast `239.255.1.1:49707` | beacon | Discovery. Out of scope for v1; the caller passes an address. |
 
@@ -327,8 +327,8 @@ Rejected alternatives: shipping an async driver behind a feature now (no consume
 UDP has no connection, so the bridge cannot tell an X-Plane that has not started yet, one that restarted, and one that is stalled apart; each reads as `poll` returning `None`. It reports facts and leaves the policy to the caller:
 
 - **Silence.** `Frame::received_at` (or `Latest`) gives the age of the newest state. The caller picks a timeout.
-- **Restart, or late start.** A restarted X-Plane has forgotten every `RREF`, and one that was not running when the bridge subscribed never got them. After a silence, the caller calls `resubscribe` (repeating it while silent is harmless: same indices, same rates). `Stats::resubscribes` counts them, so a consumer can report reconnects (stable-flight #309). Whether subscriptions also survive an aircraft or scenery reload: **verify**.
-- **Pause.** `sim/time/paused` (`int` boolean, read-only, so `Dataref<bool>`) marks a paused simulator. This only helps if X-Plane keeps streaming `RREF` while paused, including the pause on focus loss: **verify**. If it does, a paused sim streams frozen values with `paused` set; if not, a pause reads as silence and `paused` is never seen. Either way, a pause is a host stall to the controller (stable-flight #302): nothing in it is flight data.
+- **Restart, or late start.** A restarted X-Plane has forgotten every `RREF`, and one that was not running when the bridge subscribed never got them. After a silence, the caller calls `resubscribe` (repeating it while silent is harmless: same indices, same rates). `Stats::resubscribes` counts them, so a consumer can report reconnects (stable-flight #309). Subscriptions survive an aircraft reload, a scenery reload, and a move to another airport; each reads as a silence of 2–11 s with no `resubscribe` needed.
+- **Pause.** `sim/time/paused` (`int` boolean, read-only, so `Dataref<bool>`) marks a paused simulator. X-Plane keeps streaming `RREF` while paused, so a paused sim streams frozen values, including sim time, with `paused` set. Opening the Flight Configuration screen pauses it. Losing focus does not pause X-Plane 12: it keeps simulating and streaming. Either way, a pause is a host stall to the controller (stable-flight #302): nothing in it is flight data.
 - **Simulator time.** `sim/time/total_running_time_sec` (`float`, seconds) stamps state in simulator time, independent of arrival jitter (stable-flight #89, #81). It is `f32`: 1 ms steps hold for about 4.6 hours of running time.
 
 ### Errors
@@ -354,10 +354,10 @@ Invalid rates and unwritable datarefs are type errors, not runtime errors, so `X
 
 ## Timing
 
-- State rate is capped at X-Plane's frame rate ([Protocol](#protocol)), typically 60–120 Hz. A 250 Hz controller gets `None` from `poll` on most ticks; `Latest` or the caller holds values in between. The bridge does not interpolate.
+- State rate is capped at X-Plane's frame rate ([Protocol](#protocol)), typically 60–120 Hz; reaching it takes a subscription rate of at least twice the frame rate. A 250 Hz controller gets `None` from `poll` on most ticks; `Latest` or the caller holds values in between. The bridge does not interpolate.
 - State age is one frame plus loopback latency; `Frame::received_at` lets callers measure it.
 - The flight model runs several physics steps per frame (**Settings → General → Flight models per frame**); writes land at frame boundaries, so actuator latency is also up to one frame.
-- The simulator may pause when it loses focus; see [Liveness](#liveness) for what `poll` then reports.
+- The simulator keeps running when it loses focus; a pause is explicit (`pause_on`, a menu), see [Liveness](#liveness).
 - Frame-rate state quantizes anything measured from it. At 60 fps a period or delay is known to about 17 ms: for a relay-tuner oscillation (stable-flight #310, Tu 40–70 ms) that is a quarter to a third of a period. Raising the frame rate, not the subscription rate, is the fix.
 
 ## Testing
@@ -374,19 +374,24 @@ Invalid rates and unwritable datarefs are type errors, not runtime errors, so `X
 
 What the backend's issues (stable-flight #351, #352, #79, #302, #309) need from this crate, and where the line falls:
 
-- **Position.** Control uses local `x`/`y`/`z` ([Names](#names-dataref-command-rate)). The local origin moves when scenery reloads; the backend detects it from `sim/flightmodel/position/lat_ref`/`lon_ref` (latitude and longitude of the local origin) changing, or a jump in local position, and re-anchors its `GeodeticOrigin` from lat/lon. The mission demo's `--origin` comes from the same lat/lon.
+- **Position.** Control uses local `x`/`y`/`z` ([Names](#names-dataref-command-rate)). The local origin sits on a whole degree of latitude and longitude and moves when the aircraft relocates (a reload in place keeps it); local position then jumps by tens of kilometers. The backend detects it from `sim/flightmodel/position/lat_ref`/`lon_ref` (latitude and longitude of the local origin) changing, or a jump in local position, and re-anchors its `GeodeticOrigin` from lat/lon. The mission demo's `--origin` comes from the same lat/lon.
 - **Sensor synthesis.** #79 synthesizes IMU from truth, so the dataref constants cover body rates (`sim/flightmodel/position/P`/`Q`/`R`, deg/s) and world acceleration (`local_ax`/`local_ay`/`local_az`, m/s², OpenGL frame).
+- **Actuators.** For a multirotor, `override_throttles` alone hands the motors to the controller: X-Plane's stick and stabilization act only through `ENGN_thro_use`. For surfaces, `override_control_surfaces` and a write to `sim/flightmodel2/wing/{aileron,elevator,rudder}{1,2}_deg[n]` (degrees), where `n` is the wing's index in the model's `.acf` (`_wing/n`). A written deflection holds until rewritten and drives the flight model; the yoke no longer moves any surface. Positive is trailing edge down for ailerons and elevators; rudder signs mirror between left and right fins, as X-Plane's own deflections do. `sim/flightmodel/controls/*_def[n + 8]` and the named scalars (`lail1def`, `hstab1_elv1def`, ...) alias the same values, but the named scalars follow their own wing numbering (the Alia's `rail1def` is its left wing), so the backend uses `flightmodel2`. Which wings carry which surfaces is per model.
 - **Host faults.** The backend maps [Liveness](#liveness) to the core: silence past its timeout triggers `resubscribe` and counts as a reconnect; `paused` and a silence both count as a stall for the autotune.
 - **Shutdown.** Handing control back means writing every override the backend set back to `0`, then dropping the bridge. The bridge's `Drop` only unsubscribes.
 
-## Open questions
-
-1. Exact override set for a multirotor: `override_throttles` alone, or also `override_joystick` for the models px4xplane uses.
-2. Which per-surface deflection datarefs to write under `override_control_surfaces` for the plane and tailsitter models (stable-flight #333, #348, #349). `DataRefs.txt` names `sim/flightmodel/controls/lail1def` as an example.
-3. Whether `freq` below the frame rate is honored exactly.
-4. The **verify** items, stated where they apply: [Protocol](#protocol) (cross-host replies, write order), [Liveness](#liveness) (subscriptions across a reload, streaming while paused).
-
 ## Spike findings
+
+X-Plane 12, same host, 2026-10-14, Alia 250. A throwaway spike tool on the public API (`Latest`, one line per second or per 100 ms), 100 Hz subscriptions unless noted.
+
+- **Rate.** `phi` alone at each `freq` for 10 s, 90 fps: 1 → 1.0/s, 2 → 2.0, 5 → 4.9, 10 → 9.4, 15 → 13.6, 20 → 18.3, 30 → 25.0, 45 → 35.1, 60 → 45.9, 100 → 62.1. At 120 fps: 30 → 26.4, 60 → 46.0, 100 → 59.9, 120 → 73.2, 200 → 117.0, 500 → 113.7, 1000 → 114.4 (median gap 8.4 ms, one frame). Low rates are honored to within a frame; higher ones round down to whole frames, and every frame needs about twice the frame rate.
+- **Pause.** After `pause_on`, `RREF` kept arriving at 54 packets/s (63 running), `paused` read true and `total_running_time_sec` froze; `pause_off` resumed both. Opening Flight Configuration set `paused` the same way.
+- **Focus loss.** With another app in front for about 20 s, X-Plane kept 55–76 frames/s, `paused` false, sim time advancing 1 s per second. No preference file holds a pause-on-focus-loss setting.
+- **Reloads.** `reload_aircraft`: 3 s of silence (sim time advanced 0.06 s), then streaming resumed. `reload_scenery`: 11 s of silence, then resumed. Neither moved `lat_ref`/`lon_ref` (46, 11) or local position. Moving from that airport to KSFO through Flight Configuration: 2 s of silence, then `lat_ref`/`lon_ref` 33, −122 and local `x`/`z` from (−237, −33867) to (−42413, −45366). A later flight reset at KSFO read 36, −124. `Stats::resubscribes` stayed 0 throughout.
+- **Write order.** With the throttle override set, two `DREF`s to `ENGN_thro_use[0]` sent back to back (0.10 then 0.15, alternating order) read back as the second in 50 of 50 bursts. From a released state, `override_throttles` and a 0.12 throttle in one burst held 0.12 in 10 of 10, in either order.
+- **Override set.** Hovering, `override_throttles` with each `ENGN_thro_use` held at its last value (0.77, 0.79, 0.90, 0.94) for 4 s, and `yoke_roll_ratio` written 0.5 for 1 s (read back 0.5): `phi` stayed within 0.3° and `P` within 0.3 deg/s. Held for 10 s, pitch diverged (`theta` +4° to +80° in 8 s). On release, X-Plane drove the four throttles differentially again. So X-Plane's stabilization and stick act only through `ENGN_thro_use`: `override_throttles` alone hands the quad to the controller, and `override_joystick` is not needed.
+- **Transport.** Sending to the host's LAN address (192.168.4.96) instead of loopback streamed normally.
+- **Surfaces.** The Alia's `.acf` puts ailerons on `_wing/2`–`5`, elevators on `8`/`9`, rudders on `10`/`11` (even left, `_is_right_mult` −1). With no override, full right `yoke_roll_ratio` read `aileron1_deg[2]` +10 and `[3]` −20; full `yoke_pitch_ratio` read `elevator1_deg[8]`/`[9]` −20; full `yoke_heading_ratio` read `rudder1_deg[10]` −30 and `[11]` +30. X-Plane computes every wing's deflection whether or not it carries the surface. Each `flightmodel2/wing/*_deg[n]` equals `flightmodel/controls/*_def[n + 8]`. Under `override_control_surfaces`, one write of 15 to `aileron1_deg[2]` held for 2 s and read back in `ail1_def[10]`, `rail1def`, and `wing2l_ail1def`, while a full `yoke_roll_ratio` moved no surface. In wing-borne flight (100 kt, lift props idle), all other surfaces at 0, writing ailerons left +10 and right −10 raised `P` from 2 to 15 deg/s within 0.1 s; back at 0, `P` fell to 3.5.
 
 X-Plane 12, same host, 2026-10-14. `examples/probe.rs` and `tests/xplane.rs`, Alia 250 loaded.
 
