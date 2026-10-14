@@ -8,10 +8,6 @@ use crate::PathError;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Path(Cow<'static, str>);
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by Dataref and Command (#7)")
-)]
 impl Path {
     /// The 400-byte `RREF` path field minus its terminator.
     pub(crate) const MAX_LEN: usize = 399;
@@ -19,20 +15,27 @@ impl Path {
     /// Validates a runtime path.
     pub(crate) fn new(path: impl Into<String>) -> Result<Self, PathError> {
         let path = path.into();
-        check(&path)?;
+        check(&path, 0)?;
         Ok(Self(Cow::Owned(path)))
     }
 
-    /// Constructor for constants; use through [`static_path!`], which forces const
-    /// evaluation so an invalid path fails the build instead of panicking.
+    /// Constructor for constants. Call it only in a `const` item, so an invalid
+    /// path fails the build instead of panicking.
     pub(crate) const fn from_static(path: &'static str) -> Self {
-        match check(path) {
-            Ok(()) => Self(Cow::Borrowed(path)),
-            Err(PathError::Empty) => panic!("path is empty"),
-            Err(PathError::TooLong { .. }) => panic!("path is longer than Path::MAX_LEN"),
-            Err(PathError::NotAscii) => panic!("path is not ASCII"),
-            Err(PathError::ContainsNul) => panic!("path contains NUL"),
+        expect_valid(path, check(path, 0))
+    }
+
+    /// Constructor for the base of an array constant of `len` elements: as
+    /// [`from_static`](Self::from_static), and the longest element path,
+    /// `path[len - 1]`, must fit too. Call it only in a `const` item.
+    pub(crate) const fn from_static_array(path: &'static str, len: usize) -> Self {
+        if len == 0 {
+            panic!("array has no elements");
         }
+        if len - 1 > u16::MAX as usize {
+            panic!("array has more than 65536 elements");
+        }
+        expect_valid(path, check(path, element_suffix_len(len - 1)))
     }
 
     pub(crate) fn as_str(&self) -> &str {
@@ -40,25 +43,37 @@ impl Path {
     }
 }
 
-/// A [`Path`] from a `&'static str` const expression, checked at compile time.
-#[cfg_attr(not(test), expect(unused_macros, reason = "used by constants (#9)"))]
-macro_rules! static_path {
-    ($path:expr) => {
-        const { $crate::path::Path::from_static($path) }
-    };
+/// Length of the `[i]` suffix an array element adds to its base path.
+const fn element_suffix_len(index: usize) -> usize {
+    let mut digits = 1;
+    let mut rest = index / 10;
+    while rest > 0 {
+        digits += 1;
+        rest /= 10;
+    }
+    digits + 2
 }
-#[expect(unused_imports, reason = "used by constants (#9)")]
-pub(crate) use static_path;
 
-// const so `from_static` can run it at compile time.
-const fn check(path: &str) -> Result<(), PathError> {
+const fn expect_valid(path: &'static str, checked: Result<(), PathError>) -> Path {
+    match checked {
+        Ok(()) => Path(Cow::Borrowed(path)),
+        Err(PathError::Empty) => panic!("path is empty"),
+        Err(PathError::TooLong { .. }) => panic!("path is longer than Path::MAX_LEN"),
+        Err(PathError::NotAscii) => panic!("path is not ASCII"),
+        Err(PathError::ContainsNul) => panic!("path contains NUL"),
+    }
+}
+
+// const so `from_static` can run it at compile time. `suffix` is the length of
+// an element suffix the path must leave room for.
+const fn check(path: &str, suffix: usize) -> Result<(), PathError> {
     let bytes = path.as_bytes();
     if bytes.is_empty() {
         return Err(PathError::Empty);
     }
-    if bytes.len() > Path::MAX_LEN {
+    if bytes.len() + suffix > Path::MAX_LEN {
         return Err(PathError::TooLong {
-            len: bytes.len(),
+            len: bytes.len() + suffix,
             max: Path::MAX_LEN,
         });
     }
@@ -98,18 +113,50 @@ mod tests {
     }
 
     #[test]
-    fn macro_matches_runtime_constructor() {
-        const PHI: Path = static_path!("sim/flightmodel/position/phi");
-        const PHI_CONCAT: Path = static_path!(concat!("sim/flightmodel/position/", "phi"));
+    fn static_constructor_matches_runtime_constructor() {
+        const PHI: Path = Path::from_static("sim/flightmodel/position/phi");
         let runtime = Path::new("sim/flightmodel/position/phi").unwrap();
         assert_eq!(PHI, runtime);
-        assert_eq!(PHI_CONCAT, runtime);
     }
 
     #[test]
     #[should_panic(expected = "path is empty")]
     fn from_static_rejects_invalid_path() {
         Path::from_static("");
+    }
+
+    #[test]
+    fn counts_element_suffix() {
+        for (index, len) in [(0, 3), (9, 3), (10, 4), (99, 4), (100, 5), (65535, 7)] {
+            assert_eq!(element_suffix_len(index), len, "index {index}");
+        }
+    }
+
+    #[test]
+    fn array_base_leaves_room_for_last_element() {
+        // "[0]" for one element, "[10]" for eleven.
+        let one = "a".repeat(Path::MAX_LEN - 3).leak();
+        let eleven = "a".repeat(Path::MAX_LEN - 4).leak();
+        assert_eq!(Path::from_static_array(one, 1).as_str(), one);
+        assert_eq!(Path::from_static_array(eleven, 11).as_str(), eleven);
+    }
+
+    #[test]
+    #[should_panic(expected = "path is longer than Path::MAX_LEN")]
+    fn array_base_rejects_no_room_for_last_element() {
+        Path::from_static_array("a".repeat(Path::MAX_LEN - 3).leak(), 11);
+    }
+
+    #[test]
+    #[should_panic(expected = "array has no elements")]
+    fn array_base_rejects_empty_array() {
+        Path::from_static_array("sim/a", 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "array has more than 65536 elements")]
+    fn array_base_rejects_index_past_u16() {
+        Path::from_static_array("sim/a", 65537);
     }
 
     #[test]

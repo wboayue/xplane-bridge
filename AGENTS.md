@@ -39,6 +39,7 @@ src/path.rs              Path: the one place path rules live
 src/codec/               pure packet encode/decode, Datagram, DecodeError + tests.rs
 src/datarefs/            Value, Dataref, DatarefArray, constants grouped by X-Plane prefix
 src/commands.rs          Command type and constants
+src/rate.rs              Rate
 src/subscriptions.rs     Sub handles, Subscriptions (pure)
 src/frame.rs             Frame, FrameBuilder, Latest (pure)
 src/protocol/            Protocol, Stats: sans-I/O core, calls → datagrams, bytes → frames + tests.rs
@@ -53,7 +54,7 @@ examples/probe.rs
 - **Sync, `std` only.** `std::net::UdpSocket` with non-blocking reads: no tokio, no async traits, no async feature. The consumer (stable-flight's `StateSource`/`Actuator` under `RealTimeRunner`) is sync; an async user drives the public `Protocol` from their own socket. See `design.md` "Non-goals" and "Why sans-I/O".
 - **Report liveness, don't decide it.** The bridge exposes facts (`Frame::received_at`, `Stats`, `resubscribe`, pause and sim-time datarefs); timeouts, reconnect policy, and releasing overrides on shutdown belong to the consumer. See `design.md` "Liveness".
 - **Raw simulator units.** Degrees, deg/s, meters in X-Plane's OpenGL local frame (x east, y up, z south). Do not convert to NED/FRD, radians, or `uom` types here; that is the consumer's job.
-- **Never panic on simulator input.** The codec returns `DecodeError` for a bad or truncated packet; `poll` skips it (logged at `debug!`, counted in `Stats`) and keeps draining. `DecodeError` never escapes the bridge. No `.unwrap()`/`.expect()` in `src/`; use `?` or a typed error. `examples/` and tests may `expect`. The one `panic!` in `src/` is `Path::from_static`, reached only through `static_path!`'s `const` block, so it fails the build, never a run.
+- **Never panic on simulator input.** The codec returns `DecodeError` for a bad or truncated packet; `poll` skips it (logged at `debug!`, counted in `Stats`) and keeps draining. `DecodeError` never escapes the bridge. No `.unwrap()`/`.expect()` in `src/`; use `?` or a typed error. `examples/` and tests may `expect`. The only `panic!`s in `src/` are in `Path::from_static` and `Path::from_static_array`, reached only from `from_static` constructors called in `const` items, so they fail the build, never a run.
 - **Never block the caller.** `poll` drains until `WouldBlock` and returns; `write` is one `send_to`. A control loop at 250 Hz must be able to call both every tick.
 - **Only drivers touch sockets.** `Subscriptions`, `FrameBuilder`, and `Protocol` are pure and unit-tested without I/O; driver tests are a few loopback smoke tests.
 - **Codec is pure.** Encode/decode take and return byte slices or arrays; no sockets, no state. Packet layouts are in `design.md`; byte widths (400 for `RREF` paths, 500 for `DREF`) are named constants.

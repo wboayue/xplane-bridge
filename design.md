@@ -45,6 +45,7 @@ The bridge is sans-I/O: every protocol decision lives in `Protocol`, which never
 | `Path` | `path.rs` | Validate a path once (crate-private) | none |
 | `codec` | `codec/` | Encode `RREF`/`DREF`/`CMND`; decode `RREF,` into `(index, value)` records | none |
 | `Dataref`, `Command` | `datarefs/`, `commands.rs` | Name a path; constants | none |
+| `Rate` | `rate.rs` | Nonzero `RREF` rate | none |
 | `Subscriptions` | `subscriptions.rs` | Allocate indices; track active `Sub` ↔ `Dataref` | none |
 | `Frame`, `FrameBuilder`, `Latest` | `frame.rs` | Merge records from one drain; optionally hold values across frames | none |
 | `Protocol` | `protocol/` | Compose the above: calls → `Datagram`s, received bytes → `Frame`s, `Stats` | none |
@@ -63,7 +64,8 @@ pub trait Value: Copy + sealed::Sealed {
     fn to_wire(self) -> f32;
     fn from_wire(raw: f32) -> Self;
 }
-// f32: identity. i32: rounds (exact up to 2^24). bool: `raw != 0.0`, writes 0.0/1.0.
+// f32: identity. i32: rounds half away from zero, saturates, NaN → 0 (exact up to 2^24).
+// bool: `raw != 0.0` (NaN → true), writes 0.0/1.0.
 
 /// Access markers.
 pub enum ReadOnly {}
@@ -107,7 +109,7 @@ pub struct Rate(NonZeroU16);
 impl Rate { pub const fn hz(hz: u16) -> Option<Self>; }
 ```
 
-Constants are built by a crate-private `static_path!` macro that checks the `Path` rules in a `const` block, so an invalid constant fails the build and needs no runtime check. A unit test checks every element of each array constant, since the `[i]` suffix is added later. Examples:
+Constants are built by crate-private `const fn from_static` constructors that check the `Path` rules. Rust evaluates every `const` item, so an invalid constant fails the build and needs no runtime check. `DatarefArray::from_static` also checks that the last element's path, `base[N-1]`, fits, and that `1 <= N <= 65536` (indices are `u16`). Examples:
 
 ```rust
 pub const PHI: Dataref<f32, Writable> = ..;                    // position, deg
@@ -358,7 +360,7 @@ Invalid rates and unwritable datarefs are type errors, not runtime errors, so `X
 ## Testing
 
 - `codec/tests.rs`: table-driven byte-level cases for every packet type, including boundary paths (exactly 399 bytes, null-terminated in the 400-byte field), empty replies, truncated records, a 183-record reply.
-- `datarefs/`, `frame.rs`, `subscriptions.rs`: unit tests for `Path` rules (empty, 399 accepted and 400 rejected, non-ASCII, NUL), every constant and array element against them, `Value` round trips (`i32` rounding, `bool` from nonzero), `DatarefArray::at` bounds, index allocation, handle reuse on re-subscribe (including `at(0)` vs the same path built by hand), no index reuse after unsubscribe, merging across packets, `Latest` hold behavior. No sockets.
+- `datarefs/`, `frame.rs`, `subscriptions.rs`: unit tests for `Path` rules (empty, 399 accepted and 400 rejected, non-ASCII, NUL), `Value` round trips (`i32` rounding, `bool` from nonzero), `DatarefArray::at` bounds, index allocation, handle reuse on re-subscribe (including `at(0)` vs the same path built by hand), no index reuse after unsubscribe, merging across packets, `Latest` hold behavior. No sockets.
 - `protocol/tests.rs`: the bulk of the behavior tests. Feed `Protocol` byte vectors and assert the returned `Datagram`s byte-for-byte: subscribe/unsubscribe/write/command round trips, malformed input counted and skipped, records for inactive indices dropped and counted, split replies merged by `finish`, `close` emitting one `freq = 0` per active sub, `resubscribe` re-emitting each active `RREF` at its current rate and none for removed subs. No sockets.
 - `bridge/tests.rs`: a loopback `UdpSocket` as fake X-Plane, replying from a different port than it listens on. Only socket behavior: draining until `WouldBlock`, `ConnectionReset`, datagrams actually sent, unsubscribe on drop.
 - `examples/probe.rs` doubles as the manual test: run against X-Plane with a multirotor loaded, confirm attitude signs and that `override_throttles` + `ENGN_thro_use` spin the motors. Anything `#[ignore]`d needs the simulator and says so.
