@@ -28,7 +28,7 @@ This section is the single source for wire-level facts; later sections refer to 
 
 | Packet | Direction | Layout | Notes |
 |---|---|---|---|
-| `RREF` | → X-Plane | `"RREF\0"`, `i32 freq`, `i32 index`, `char[400] path` (413 bytes) | Subscribe `path` at `freq` per second under caller-chosen `index`. `freq = 0` unsubscribes. The same path under different indices is sent once per index. |
+| `RREF` | → X-Plane | `"RREF\0"`, `i32 freq`, `i32 index`, `char[400] path` (413 bytes) | Subscribe `path` at `freq` per second under caller-chosen `index`. `freq = 0` unsubscribes. The same path under different indices is sent once per index. Whether a 400-byte path with no terminator is accepted is untested, so the bridge caps paths at 399. |
 | `RREF,` | ← X-Plane | `"RREF,"`, then repeated `{ i32 index, f32 value }` | Holds at most 183 records (1469 bytes). Up to 183 subscriptions arrive in one packet per frame; larger sets spill into extra packets, and not every record may arrive every frame. Rate is capped at the simulator frame rate whatever `freq` asks for. |
 | `DREF` | → X-Plane | `"DREF\0"`, `f32 value`, `char[500] path` (509 bytes) | Write one value. Array elements address as `path[i]`. Fire-and-forget; no ack. **verify** float conversion for int datarefs (e.g. `override_throttles`) and that writes apply in arrival order within a frame. |
 | `CMND` | → X-Plane | `"CMND\0"`, null-terminated `path` | Trigger a command, e.g. `sim/operation/pause_toggle`. |
@@ -67,19 +67,24 @@ pub trait Value: Copy + sealed::Sealed {
 pub enum ReadOnly {}
 pub enum Writable {}
 
+/// A validated path, shared by `Dataref` and `Command` so the rules live once.
+/// Non-empty ASCII, no NUL, at most 399 bytes including any `[i]` suffix:
+/// it fits an `RREF` (the tighter limit) with a terminator to spare.
+struct Path(Cow<'static, str>);   // crate-private
+
 /// A dataref path of value type `T`, scalar or one array element.
 /// Paths are validated once, at construction: a `Dataref` always fits a packet.
 // Clone, Debug, PartialEq, Eq, Hash implemented by hand: derives would bound `T`/`A`.
-pub struct Dataref<T: Value, A = ReadOnly> { path: Cow<'static, str>, index: Option<u16>, _t: PhantomData<fn() -> (T, A)> }
+pub struct Dataref<T: Value, A = ReadOnly> { path: Path, index: Option<u16>, _t: PhantomData<fn() -> (T, A)> }
 
 impl<T: Value, A> Dataref<T, A> {
-    /// Runtime path for anything without a constant. `PathTooLong` if it would
-    /// not fit an `RREF` (400 bytes, the tighter of the two limits).
+    /// Runtime path for anything without a constant. `InvalidPath` if it breaks a `Path` rule.
     pub fn new(path: impl Into<String>) -> Result<Self, XPlaneError>;
-    pub fn path(&self) -> &str;
+    /// The wire path: `path`, or `path[i]` for an array element.
+    pub fn path(&self) -> Cow<'_, str>;
 }
 
-/// A fixed-length array dataref (`ENGN_thro_use[8]`). Only arrays have `at`.
+/// A fixed-length array dataref (`ENGN_thro_use[16]`). Only arrays have `at`.
 pub struct DatarefArray<T: Value, A, const N: usize> { .. }
 
 impl<T: Value, A, const N: usize> DatarefArray<T, A, N> {
@@ -89,9 +94,9 @@ impl<T: Value, A, const N: usize> DatarefArray<T, A, N> {
     pub fn iter(&self) -> impl Iterator<Item = Dataref<T, A>> + '_;
 }
 
-/// A command path, validated like `Dataref`.
+/// A command path, validated by the same `Path` rules.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Command { path: Cow<'static, str> }
+pub struct Command { path: Path }
 
 /// Requested `RREF` rate. Nonzero: `freq = 0` means unsubscribe on the wire,
 /// so it is only ever sent by `unsubscribe`/`close`.
@@ -100,13 +105,17 @@ pub struct Rate(NonZeroU16);
 impl Rate { pub const fn hz(hz: u16) -> Option<Self>; }
 ```
 
-Constants are built by a crate-private `const` constructor; a unit test checks every constant's path length, so they need no runtime check. Examples:
+Constants are built by a crate-private `const` constructor; a unit test checks every constant, and every element of each array constant, against the `Path` rules, so they need no runtime check. Examples:
 
 ```rust
-pub const PHI: Dataref<f32> = ..;                              // position, deg
-pub const THRO_USE: DatarefArray<f32, Writable, 8> = ..;        // engine, 0–1
+pub const PHI: Dataref<f32, Writable> = ..;                    // position, deg
+pub const LATITUDE: Dataref<f32> = ..;                         // position, deg (double on the sim side)
+pub const THRO_USE: DatarefArray<f32, Writable, 16> = ..;       // engine, 0–1
 pub const THROTTLES: Dataref<bool, Writable> = ..;              // overrides
+pub const PAUSED: Dataref<bool> = ..;                          // time
 ```
+
+Access mirrors the writable column of `DataRefs.txt` exactly, with no judgment calls: much of the flight state (`phi`, `P`, `local_x`, `q`) is writable there, and writing it repositions the aircraft, which is a legitimate way to set up a test. The type stops writes the simulator would ignore, not writes that are unwise.
 
 Call sites use constants or values built once at startup, never string literals per tick. Doubles such as `latitude` are `Dataref<f32>`, because `RREF` sends `f32`. At 47° latitude one `f32` step is about 0.4 m, too coarse for position hold or differentiating velocity, so position for control comes from local `x`/`y`/`z` (small values, sub-millimeter steps near the origin); lat/lon are for display and for anchoring the origin ([Relationship to Stable Flight](#relationship-to-stable-flight)). Doc comments on `f64` datarefs state the precision. The type and access of a new constant come from `DataRefs.txt`.
 
@@ -118,15 +127,15 @@ Call sites use constants or values built once at startup, never string literals 
 pub struct Sub<T: Value> { index: i32, _t: PhantomData<fn() -> T> }
 
 /// Index bookkeeping only: what is subscribed, under which index, at which rate.
-/// No encoding, no datagrams.
+/// Keyed by wire path (`path[i]` for elements, formatted once here). No encoding, no datagrams.
 impl Subscriptions {
-    /// The existing handle for `dataref` (its rate updated), or a newly allocated one.
+    /// The existing handle for `dataref`'s wire path (its rate updated), or a newly allocated one.
     pub(crate) fn insert<T: Value, A>(&mut self, dataref: &Dataref<T, A>, rate: Rate) -> Result<Sub<T>, XPlaneError>;
-    /// Remove `sub`, returning its path, or `None` if not active.
+    /// Remove `sub`, returning its wire path, or `None` if not active.
     pub(crate) fn remove<T: Value>(&mut self, sub: Sub<T>) -> Option<Cow<'static, str>>;
     /// Remove every active subscription (shutdown).
     pub(crate) fn drain(&mut self) -> impl Iterator<Item = (i32, Cow<'static, str>)> + '_;
-    /// Every active subscription, for `resubscribe_all`.
+    /// Every active subscription with its wire path, for `resubscribe`.
     pub(crate) fn iter(&self) -> impl Iterator<Item = (i32, &str, Rate)> + '_;
 
     pub fn is_active<T: Value>(&self, sub: Sub<T>) -> bool;
@@ -134,19 +143,24 @@ impl Subscriptions {
 }
 ```
 
-Handles replace path lookup on the read path: `frame.get(sub)` is a map lookup on an `i32`, with no string hashing per tick and no ambiguity between `THRO_USE.at(0)` and `Dataref::new("…/ENGN_thro_use[0]")`. The handle carries the dataref's value type, so `frame.get(sub)` returns `Option<T>` and a `bool` override cannot be read as a throttle. Indices are allocated monotonically and not reused after unsubscribe, so a late packet for an old index is never misread as a new subscription. Mutation is crate-private: handles are only ever allocated by `Protocol`, in the same call that encodes the `RREF`, so a handle and its datagram cannot drift apart. Fakes get handles from a `Protocol`, as the real bridge does; the read-only half is public through `Protocol::subscriptions()`.
+Handles replace path lookup on the read path: `frame.get(sub)` is a map lookup on an `i32`, with no string hashing per tick. Keying by wire path means `THRO_USE.at(0)` and `Dataref::new("…/ENGN_thro_use[0]")` share one index, and so do the same path under two value types: both read the same raw `f32`, each converted by its own `Value`. The handle carries the dataref's value type, so `frame.get(sub)` returns `Option<T>` and a `bool` override cannot be read as a throttle. Indices are allocated monotonically and not reused after unsubscribe, so a late packet for an old index is never misread as a new subscription. Mutation is crate-private: handles are only ever allocated by `Protocol`, in the same call that encodes the `RREF`, so a handle and its datagram cannot drift apart. Fakes get handles from a `Protocol`, as the real bridge does; the read-only half is public through `Protocol::subscriptions()`.
+
+A handle is only meaningful against frames from the `Protocol` that issued it. Indices start at the same value in every `Protocol`, so a `Sub` from one bridge reads another bridge's frames without error. Tagging handles with an instance id would catch this, but no consumer runs two simulators, so v1 documents it instead.
 
 ### Core: `Protocol`, `Datagram`
 
 ```rust
 /// One outgoing UDP payload. Sized for the largest packet (`DREF`, 509 bytes); no heap.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// PartialEq, Eq by hand over `as_bytes()`, so bytes past `len` never matter.
+#[derive(Clone, Copy, Debug)]
 pub struct Datagram { buf: [u8; 509], len: usize }
 impl Datagram { pub fn as_bytes(&self) -> &[u8]; }
 
 /// Sans-I/O protocol state. Owns `Subscriptions`, a `FrameBuilder`, and `Stats`.
-/// Every method is synchronous. `write`, `command`, and `handle` do not
-/// allocate; `finish` allocates only the `Frame` it returns.
+/// Every method is synchronous. `write` and `command` do not allocate; `handle`
+/// allocates only while the pending frame grows past its high-water mark;
+/// `finish` allocates only the `Frame` it returns.
+#[derive(Default)]
 pub struct Protocol { .. }
 
 impl Protocol {
@@ -165,12 +179,13 @@ impl Protocol {
     /// The `RREF` for every active subscription, same indices and rates, so a
     /// restarted X-Plane streams again and existing handles stay valid. Counts
     /// in `Stats::resubscribes`.
-    pub fn resubscribe_all(&mut self) -> Vec<Datagram>;
+    pub fn resubscribe(&mut self) -> Vec<Datagram>;
 
     // Received bytes → frames. The driver calls `handle` once per datagram
     // it drained and `finish` once per drain.
-    /// Decode one datagram and fold it into the pending frame. Non-`RREF,`
-    /// datagrams are ignored; malformed ones are counted and skipped. Never errs.
+    /// Decode one datagram and fold it into the pending frame. Anything that
+    /// does not decode as `RREF,` (wrong header included) counts in
+    /// `Stats::malformed` and is skipped. Never errs.
     pub fn handle(&mut self, bytes: &[u8], at: Instant);
     /// The merged frame since the last `finish`, or `None`.
     pub fn finish(&mut self) -> Option<Frame>;
@@ -184,9 +199,11 @@ impl Protocol {
 pub struct Stats { pub packets: u64, pub malformed: u64, pub dropped_records: u64, pub resubscribes: u64 }
 ```
 
-Each call maps to exactly one outgoing datagram (`close` to one per subscription), so methods *return* the datagram instead of queueing it; there is no outbox and no callback. `Protocol` is public: it is the whole protocol for anyone bringing their own socket (`socket2`, `mio`, an embedded stack), and it is what the tests exercise.
+Each call maps to exactly one outgoing datagram (`close` and `resubscribe` to one per subscription), so methods *return* the datagram instead of queueing it; there is no outbox and no callback. `Protocol` is public: it is the whole protocol for anyone bringing their own socket (`socket2`, `mio`, an embedded stack), and it is what the tests exercise.
 
-`Protocol` is the only place the pure parts meet. `subscribe` asks `Subscriptions` for a handle and encodes the `RREF`; `unsubscribe` and `close` encode `freq = 0` for what `Subscriptions` removed; `resubscribe_all` re-encodes what `Subscriptions` holds, so `Subscriptions` also keeps each subscription's `Rate`. `handle` decodes with `codec`, keeps records whose index `Subscriptions` reports active, counts the rest in `Stats::dropped_records`, and pushes the kept ones into `FrameBuilder`.
+`Protocol` is the only place the pure parts meet. `subscribe` asks `Subscriptions` for a handle and encodes the `RREF`; `unsubscribe` and `close` encode `freq = 0` for what `Subscriptions` removed; `resubscribe` re-encodes what `Subscriptions` holds, so `Subscriptions` also keeps each subscription's `Rate`. `handle` decodes with `codec`, keeps records whose index `Subscriptions` reports active, counts the rest in `Stats::dropped_records`, and pushes the kept ones into `FrameBuilder`.
+
+`write` and `command` take `&self` and read no state: they are `codec` calls routed through `Protocol` so a transport has one entry point. Because the sink half needs no `Protocol` state, a driver could later split into a source half and a sink half that each own a clone of the socket. Nothing needs that today: the backend's `Vehicle` owns one bridge and uses both halves from one thread.
 
 ### Values: `Frame`, `FrameBuilder`, `Latest`
 
@@ -247,6 +264,8 @@ pub trait DatarefSink {
 
 An actuator-only component takes `impl DatarefSink`; a state estimator takes `impl DatarefSource`. `XPlaneUdpBridge` implements both. A fake source is a `Protocol` plus a queue of `Frame`s.
 
+The split follows who uses what, not one trait per method. `DatarefSource` keeps subscription management, `poll`, and `stats` together because the one component that reads state (the backend's `StateSource`) subscribes at startup, polls every tick, and resubscribes and reports stats on silence. Splitting it would make every fake implement two traits for one role.
+
 The traits are for static dispatch: generic methods already rule out `dyn`, and nothing in the crate needs it.
 
 ### Driver
@@ -281,7 +300,7 @@ impl DatarefSource for XPlaneUdpBridge {
 
 Socket rules:
 
-- `connect(addr: SocketAddr) -> Result<Self>` binds an ephemeral local port, sets the socket non-blocking, and stores `addr`. No handshake exists, so "connected" only means the socket is ready. The socket is never `connect()`ed, and replies are accepted from any port on `addr`'s IP, since they come from `49001` ([Protocol](#protocol)).
+- `connect(addr: SocketAddr) -> Result<Self>` binds an ephemeral port on the unspecified address of `addr`'s family (`0.0.0.0` or `[::]`, so cross-host works), sets the socket non-blocking, and stores `addr`. No handshake exists, so "connected" only means the socket is ready. The socket is never `connect()`ed, because replies come from `49001` ([Protocol](#protocol)) and a connected socket would drop them. Replies are not filtered by source: anything that is not a valid `RREF,` for an active index is counted and dropped by `Protocol`, which never sees addresses.
 - Every other call is one `Protocol` call plus a `send_to` per returned datagram. Eight motor writes per tick are eight datagrams, which is fine on loopback.
 - `poll` errs only on socket errors; malformed datagrams are `Protocol`'s concern (counted, logged at `debug!`, skipped).
 - `is_no_data` (in `bridge/mod.rs`) treats `WouldBlock` and `ConnectionReset` as "drained". On Windows `ConnectionReset` follows a `send_to` that hit a closed port (X-Plane not running yet). **verify** on Windows; the alternative, disabling `SIO_UDP_CONNRESET`, needs a non-`std` call.
@@ -292,17 +311,17 @@ Socket rules:
 This is the split `rustls` (`read_tls`/`write_tls`) and `quinn-proto`/`quinn` use. With one driver it still pays for itself:
 
 - `Protocol` tests need no sockets and assert datagrams byte-for-byte; driver tests are a few loopback smoke tests.
-- Another transport (the 12.1 WebSocket API, a pcap replayer, an in-process fake X-Plane for CI, a tokio socket) is another small driver over the public `Protocol`, not a fork. realflight-bridge's `async_impl.rs` files, which duplicate each bridge's logic for the async runtime, are the fork this avoids.
+- Another transport for the same packets (a pcap replayer, an in-process fake X-Plane for CI, a tokio socket) is another small driver over the public `Protocol`, not a fork. The 12.1 WebSocket API is a different protocol (JSON) and would need its own core, not just a driver. realflight-bridge's `async_impl.rs` files, which duplicate each bridge's logic for the async runtime, are the fork this avoids.
 
 Rejected alternatives: shipping an async driver behind a feature now (no consumer; Stable Flight's host stack is sync, see [Non-goals](#non-goals)); a `maybe-async`-style macro emitting sync and async from one source (hides control flow, mixes I/O with logic); an async-only core with `block_on` in a sync shim (a runtime inside a 250 Hz loop).
 
 ### Liveness
 
-UDP has no connection, so the bridge cannot tell a restarted X-Plane, a paused one, and a slow frame apart; all three read as `poll` returning `None`. It reports facts and leaves the policy to the caller:
+UDP has no connection, so the bridge cannot tell an X-Plane that has not started yet, one that restarted, and one that is stalled apart; each reads as `poll` returning `None`. It reports facts and leaves the policy to the caller:
 
 - **Silence.** `Frame::received_at` (or `Latest`) gives the age of the newest state. The caller picks a timeout.
-- **Restart.** A restarted X-Plane has forgotten every `RREF`. After a silence, the caller calls `resubscribe` (repeating it while silent is harmless: same indices, same rates). `Stats::resubscribes` counts them, so a consumer can report reconnects (stable-flight #309). Whether subscriptions also survive an aircraft or scenery reload: **verify**.
-- **Pause.** `sim/time/paused` (`int` boolean, read-only, so `Dataref<bool>`) distinguishes a paused simulator, including the pause on focus loss, from a dead one. A pause is a host stall to the controller (stable-flight #302): nothing in it is flight data.
+- **Restart, or late start.** A restarted X-Plane has forgotten every `RREF`, and one that was not running when the bridge subscribed never got them. After a silence, the caller calls `resubscribe` (repeating it while silent is harmless: same indices, same rates). `Stats::resubscribes` counts them, so a consumer can report reconnects (stable-flight #309). Whether subscriptions also survive an aircraft or scenery reload: **verify**.
+- **Pause.** `sim/time/paused` (`int` boolean, read-only, so `Dataref<bool>`) marks a paused simulator. This only helps if X-Plane keeps streaming `RREF` while paused, including the pause on focus loss: **verify**. If it does, a paused sim streams frozen values with `paused` set; if not, a pause reads as silence and `paused` is never seen. Either way, a pause is a host stall to the controller (stable-flight #302): nothing in it is flight data.
 - **Simulator time.** `sim/time/total_running_time_sec` (`float`, seconds) stamps state in simulator time, independent of arrival jitter (stable-flight #89, #81). It is `f32`: 1 ms steps hold for about 4.6 hours of running time.
 
 ### Errors
@@ -310,15 +329,16 @@ UDP has no connection, so the bridge cannot tell a restarted X-Plane, a paused o
 Codec errors are separate from bridge errors, so the public bridge error lists only what a bridge call can return.
 
 ```rust
-// codec: encoding cannot fail, because paths are validated on construction
+// codec: encoding cannot fail, because paths are validated on construction, so there is no EncodeError
 pub enum DecodeError { BadHeader, Truncated { len: usize } }   // `len` not 5 + 8k
 
 // bridge
 pub enum XPlaneError {
     Io(std::io::Error),             // socket bind/send/recv
-    PathTooLong { len: usize, max: usize },  // Dataref::new / Command::new only
+    InvalidPath(PathError),         // Dataref::new / Command::new only
     TooManySubscriptions,           // index space exhausted (i32, so practically never)
 }
+pub enum PathError { Empty, TooLong { len: usize, max: usize }, NotAscii, ContainsNul }
 ```
 
 Invalid rates and unwritable datarefs are type errors, not runtime errors, so `XPlaneError` has no variant for them. On the per-tick path only `Io` is possible.
@@ -330,14 +350,14 @@ Invalid rates and unwritable datarefs are type errors, not runtime errors, so `X
 - State rate is capped at X-Plane's frame rate ([Protocol](#protocol)), typically 60–120 Hz. A 250 Hz controller gets `None` from `poll` on most ticks; `Latest` or the caller holds values in between. The bridge does not interpolate.
 - State age is one frame plus loopback latency; `Frame::received_at` lets callers measure it.
 - The flight model runs several physics steps per frame (**Settings → General → Flight models per frame**); writes land at frame boundaries, so actuator latency is also up to one frame.
-- The simulator pauses when it loses focus unless that setting is disabled, and `poll` then returns `None` indefinitely. See [Liveness](#liveness).
+- The simulator may pause when it loses focus; see [Liveness](#liveness) for what `poll` then reports.
 - Frame-rate state quantizes anything measured from it. At 60 fps a period or delay is known to about 17 ms: for a relay-tuner oscillation (stable-flight #310, Tu 40–70 ms) that is a quarter to a third of a period. Raising the frame rate, not the subscription rate, is the fix.
 
 ## Testing
 
-- `codec/tests.rs`: table-driven byte-level cases for every packet type, including boundary paths (exactly 400 bytes; `Dataref::new` rejects one over), empty replies, truncated records, a 183-record reply.
-- `datarefs/`, `frame.rs`, `subscriptions.rs`: unit tests for every constant's path length, `Value` round trips (`i32` rounding, `bool` from nonzero), `DatarefArray::at` bounds, index allocation, handle reuse on re-subscribe, no index reuse after unsubscribe, merging across packets, `Latest` hold behavior. No sockets.
-- `protocol/tests.rs`: the bulk of the behavior tests. Feed `Protocol` byte vectors and assert the returned `Datagram`s byte-for-byte: subscribe/unsubscribe/write/command round trips, malformed input counted and skipped, records for inactive indices dropped and counted, split replies merged by `finish`, `close` emitting one `freq = 0` per active sub, `resubscribe_all` re-emitting each active `RREF` at its current rate and none for removed subs. No sockets.
+- `codec/tests.rs`: table-driven byte-level cases for every packet type, including boundary paths (exactly 399 bytes, null-terminated in the 400-byte field), empty replies, truncated records, a 183-record reply.
+- `datarefs/`, `frame.rs`, `subscriptions.rs`: unit tests for `Path` rules (empty, 399 accepted and 400 rejected, non-ASCII, NUL), every constant and array element against them, `Value` round trips (`i32` rounding, `bool` from nonzero), `DatarefArray::at` bounds, index allocation, handle reuse on re-subscribe (including `at(0)` vs the same path built by hand), no index reuse after unsubscribe, merging across packets, `Latest` hold behavior. No sockets.
+- `protocol/tests.rs`: the bulk of the behavior tests. Feed `Protocol` byte vectors and assert the returned `Datagram`s byte-for-byte: subscribe/unsubscribe/write/command round trips, malformed input counted and skipped, records for inactive indices dropped and counted, split replies merged by `finish`, `close` emitting one `freq = 0` per active sub, `resubscribe` re-emitting each active `RREF` at its current rate and none for removed subs. No sockets.
 - `bridge/tests.rs`: a loopback `UdpSocket` as fake X-Plane, replying from a different port than it listens on. Only socket behavior: draining until `WouldBlock`, `ConnectionReset`, datagrams actually sent, unsubscribe on drop.
 - `examples/probe.rs` doubles as the manual test: run against X-Plane with a multirotor loaded, confirm attitude signs and that `override_throttles` + `ENGN_thro_use` spin the motors. Anything `#[ignore]`d needs the simulator and says so.
 
@@ -357,8 +377,7 @@ What the backend's issues (stable-flight #351, #352, #79, #302, #309) need from 
 1. Exact override set for a multirotor: `override_throttles` alone, or also `override_joystick` for the models px4xplane uses.
 2. Which per-surface deflection datarefs to write under `override_control_surfaces` for the plane and tailsitter models (stable-flight #333, #348, #349). `DataRefs.txt` names `sim/flightmodel/controls/lail1def` as an example.
 3. Whether `freq` below the frame rate is honored exactly.
-4. Whether `RREF` subscriptions survive an aircraft or scenery reload, or only die with the process ([Liveness](#liveness)).
-5. The **verify** items under [Protocol](#protocol) (cross-host replies, int datarefs, write order) and [Driver](#driver) (`ConnectionReset` on Windows).
+4. The **verify** items, stated where they apply: [Protocol](#protocol) (cross-host replies, int datarefs, write order), [Driver](#driver) (`ConnectionReset` on Windows), [Liveness](#liveness) (subscriptions across a reload, streaming while paused).
 
 ## Spike findings
 
@@ -383,4 +402,5 @@ X-Plane 12, same host, 2026-10-05. Python probe sending `RREF` from an ephemeral
 X-Plane 12 `DataRefs.txt` (header dated 2026-06-24), 2026-10-13:
 
 - **Paths.** `sim/time/paused` (`int` boolean, read-only), `sim/time/total_running_time_sec` (`float`), `sim/flightmodel/position/lat_ref`/`lon_ref` (`float`, the origin of local coordinates), `local_ax/ay/az` (`float`, m/s², OpenGL frame), `P`/`Q`/`R` (`float`, deg/s), `local_x` (`double`), `latitude` (`double`), and `sim/operation/override/override_throttles`, `override_joystick`, `override_control_surfaces` (`int` boolean, writable) all exist.
-- **Throttle target.** `override_throttles` reads "Use ENGN_thro_use to control them", so `ENGN_thro_use` is the write target.
+- **Throttle target.** `override_throttles` reads "Use ENGN_thro_use to control them", so `ENGN_thro_use` is the write target. It is `float[16]`.
+- **Access.** `phi`, `P`, `local_x`, `local_ax`, `q` (`float[4]`), and `total_running_time_sec` are writable; `latitude` and `sim/time/paused` are not.
