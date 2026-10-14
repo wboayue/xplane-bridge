@@ -366,7 +366,7 @@ Invalid rates and unwritable datarefs are type errors, not runtime errors, so `X
 - `datarefs/`, `frame.rs`, `subscriptions.rs`: unit tests for `Path` rules (empty, 399 accepted and 400 rejected, non-ASCII, NUL), `Value` round trips (`i32` rounding, `bool` from nonzero), `DatarefArray::at` bounds, index allocation, handle reuse on re-subscribe (including `at(0)` vs the same path built by hand), no index reuse after unsubscribe, merging across packets, `Latest` hold behavior. No sockets.
 - `protocol/tests.rs`: the bulk of the behavior tests. Feed `Protocol` byte vectors and assert the returned `Datagram`s byte-for-byte: subscribe/unsubscribe/write/command round trips, malformed input counted and skipped, records for inactive indices dropped and counted, split replies merged by `finish`, `close` emitting one `freq = 0` per active sub, `resubscribe` re-emitting each active `RREF` at its current rate and none for removed subs. No sockets.
 - `bridge/tests.rs`: a loopback `UdpSocket` as fake X-Plane, replying from a different port than it listens on. Only socket behavior: draining until `WouldBlock`, `ConnectionReset`, datagrams actually sent, unsubscribe on drop.
-- `examples/probe.rs` doubles as the manual test: run against X-Plane with a multirotor loaded, confirm attitude signs and that `override_throttles` + `ENGN_thro_use` spin the motors. Anything `#[ignore]`d needs the simulator and says so.
+- `examples/probe.rs` doubles as the manual test: run against X-Plane with a multirotor loaded, confirm attitude signs and that `override_throttles` + `ENGN_thro_use` spin the motors (`--spin`). Anything `#[ignore]`d needs the simulator and says so; `tests/xplane.rs` holds those that need it running (`XPLANE_ADDR`): streaming a subscription, and a `DREF` write read back through `RREF`.
 
 ## Relationship to Stable Flight
 
@@ -387,6 +387,11 @@ What the backend's issues (stable-flight #351, #352, #79, #302, #309) need from 
 4. The **verify** items, stated where they apply: [Protocol](#protocol) (cross-host replies, int datarefs, write order), [Liveness](#liveness) (subscriptions across a reload, streaming while paused).
 
 ## Spike findings
+
+X-Plane 12, same host, 2026-10-14. `examples/probe.rs`, aircraft on the ground.
+
+- **Quaternion.** At `psi` 156.88°, `theta` −0.84°, `phi` −0.56°, `q` read `[0.200, 0.006, −0.006, 0.980]`; the yaw-pitch-roll (z-y-x) quaternion of those angles is `[0.200, 0.006, −0.006, 0.980]`. So `q` is `[w, x, y, z]`, rotating north-east-down to body, the same attitude as `psi`/`theta`/`phi`, not relative to the OpenGL local frame.
+- **Streaming.** 100 Hz subscriptions produced about 50 packets/s, none malformed.
 
 CI, 2026-10-14: on `windows-latest`, `recv_from` on an unconnected `std::net::UdpSocket` returns `ConnectionReset` after a `send_to` to a closed loopback port (`bridge/tests.rs` `windows_reports_connection_reset`); `poll` stays `Ok` on Linux, macOS, and Windows (`poll_survives_send_to_closed_port`).
 
@@ -414,4 +419,4 @@ X-Plane 12 `DataRefs.txt` (header dated 2026-06-24), 2026-10-13:
 - **Throttle target.** `override_throttles` reads "Use ENGN_thro_use to control them", so `ENGN_thro_use` is the write target. It is `float[16]`.
 - **Access.** `phi`, `P`, `local_x`, `local_ax`, `q` (`float[4]`), and `total_running_time_sec` are writable; `latitude` and `sim/time/paused` are not.
 - **Constants.** Every constant in `datarefs` matches its path, type, and access here, and `pause_toggle` and `reset_flight` are in `Commands.txt`; the `#[ignore]`d `constants_match_*` tests recheck this with `XPLANE_DIR` set.
-- **Quaternion order.** `DataRefs.txt` does not give `q`'s component order; `position::QUATERNION` documents `[w, x, y, z]`, the SDK convention. **verify** with the probe.
+- **Quaternion order.** `DataRefs.txt` does not give `q`'s component order or frame.

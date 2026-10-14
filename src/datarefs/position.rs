@@ -78,7 +78,8 @@ pub const LAT_REF: Dataref<f32, ReadOnly> =
 pub const LON_REF: Dataref<f32, ReadOnly> =
     Dataref::from_static("sim/flightmodel/position/lon_ref");
 
-/// Rotation from the local OpenGL frame to the aircraft body frame, as a
-/// quaternion `[w, x, y, z]`.
+/// Attitude as a quaternion `[w, x, y, z]`: rotation from north-east-down to
+/// the body frame, the same yaw-pitch-roll as [`PSI`], [`THETA`], [`PHI`]. Not
+/// relative to the OpenGL local frame.
 pub const QUATERNION: DatarefArray<f32, Writable, 4> =
     DatarefArray::from_static("sim/flightmodel/position/q");
