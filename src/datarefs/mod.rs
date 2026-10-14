@@ -195,8 +195,13 @@ impl<T: Value, A, const N: usize> DatarefArray<T, A, N> {
     }
 
     /// All `N` elements in order.
-    pub fn iter(&self) -> impl Iterator<Item = Dataref<T, A>> + '_ {
-        (0..N).filter_map(|i| self.at(i))
+    pub fn iter(&self) -> impl Iterator<Item = Dataref<T, A>> + use<T, A, N> {
+        // Owns a clone of the base so the iterator outlives a constant's temporary.
+        let base = self.base.clone();
+        (0..N).filter_map(move |i| {
+            let index = u16::try_from(i).ok()?;
+            Some(Dataref::from_path(base.clone(), Some(index)))
+        })
     }
 }
 
@@ -232,5 +237,7 @@ impl<T: Value, A, const N: usize> Hash for DatarefArray<T, A, N> {
     }
 }
 
+#[cfg(test)]
+mod constants_tests;
 #[cfg(test)]
 mod tests;

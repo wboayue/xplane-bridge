@@ -90,6 +90,15 @@ mod tests {
     }
 
     #[test]
+    fn all_lists_every_constant() {
+        let defined = include_str!("commands.rs")
+            .lines()
+            .filter(|line| line.starts_with("pub const "))
+            .count();
+        assert_eq!(ALL.len(), defined);
+    }
+
+    #[test]
     fn every_constant_passes_path_rules() {
         for command in ALL {
             assert!(Path::new(command.path()).is_ok(), "path {}", command.path());
