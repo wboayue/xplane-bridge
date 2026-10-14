@@ -15,7 +15,7 @@ pub mod testing;
 #[cfg(test)]
 mod xplane_files;
 
-pub use bridge::{DatarefSink, DatarefSource};
+pub use bridge::{DatarefSink, DatarefSource, XPlaneUdpBridge};
 pub use codec::Datagram;
 pub use commands::Command;
 pub use datarefs::{Dataref, DatarefArray, ReadOnly, Value, Writable};

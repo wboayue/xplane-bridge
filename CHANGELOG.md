@@ -17,3 +17,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Frame` and `Latest` (#11).
 - `Protocol` and `Stats`: the sans-I/O protocol core (#12).
 - `DatarefSource` and `DatarefSink` traits; `testing::FakeXPlane` behind feature `testing` (#13).
+- `XPlaneUdpBridge`: the `std::net::UdpSocket` driver (#14).

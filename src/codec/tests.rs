@@ -1,4 +1,4 @@
-use super::test_bytes::{dref as dref_bytes, reply, rref};
+use super::test_bytes::{cmnd as cmnd_bytes, dref as dref_bytes, reply, rref};
 use super::*;
 use crate::path::Path;
 
@@ -83,7 +83,7 @@ fn encodes_dref() {
 fn encodes_cmnd() {
     let max = max_path();
     for wire in ["sim/operation/pause_toggle", &max] {
-        let expected = [b"CMND\0".as_slice(), wire.as_bytes(), b"\0"].concat();
+        let expected = cmnd_bytes(wire);
         let got = cmnd(path(wire).wire(None));
         assert_eq!(got.as_bytes(), expected, "path {wire}");
     }

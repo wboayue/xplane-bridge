@@ -22,6 +22,11 @@ pub(crate) fn dref(value: f32, path: &str) -> Vec<u8> {
     .concat()
 }
 
+/// A `CMND` triggering `path`.
+pub(crate) fn cmnd(path: &str) -> Vec<u8> {
+    [b"CMND\0".as_slice(), path.as_bytes(), b"\0"].concat()
+}
+
 /// An `RREF,` reply carrying `records`.
 pub(crate) fn reply(records: &[(i32, f32)]) -> Vec<u8> {
     let mut bytes = b"RREF,".to_vec();

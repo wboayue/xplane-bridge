@@ -281,23 +281,22 @@ A driver is the smallest loop that moves `Datagram`s between a `Protocol` and a 
 
 ```rust
 // bridge/udp.rs
-pub struct XPlaneUdpBridge { proto: Protocol, sock: std::net::UdpSocket, addr: SocketAddr }
+pub struct XPlaneUdpBridge { proto: Protocol, sock: std::net::UdpSocket, addr: SocketAddr, buf: Box<[u8]> }
 
 impl DatarefSink for XPlaneUdpBridge {
     fn write<T: Value>(&mut self, d: &Dataref<T, Writable>, v: T) -> Result<(), XPlaneError> {
-        let dg = self.proto.write(d, v);
-        self.sock.send_to(dg.as_bytes(), self.addr)?;
+        self.send(&self.proto.write(d, v))?;
         Ok(())
     }
 }
 
 impl DatarefSource for XPlaneUdpBridge {
     fn poll(&mut self) -> Result<Option<Frame>, XPlaneError> {
-        let mut buf = [0u8; 1500];
         loop {
-            match self.sock.recv_from(&mut buf) {
-                Ok((n, _)) => self.proto.handle(&buf[..n], Instant::now()),
-                Err(e) if is_no_data(&e) => return Ok(self.proto.finish()),
+            match self.sock.recv_from(&mut self.buf) {
+                Ok((n, _)) => self.proto.handle(&self.buf[..n], Instant::now()),
+                Err(e) if e.kind() == WouldBlock => return Ok(self.proto.finish()),
+                Err(e) if e.kind() == ConnectionReset => {} // skipped, keep draining
                 Err(e) => return Err(e.into()),
             }
         }
@@ -310,7 +309,8 @@ Socket rules:
 - `connect(addr: SocketAddr) -> Result<Self>` binds an ephemeral port on the unspecified address of `addr`'s family (`0.0.0.0` or `[::]`, so cross-host works), sets the socket non-blocking, and stores `addr`. No handshake exists, so "connected" only means the socket is ready. The socket is never `connect()`ed, because replies come from `49001` ([Protocol](#protocol)) and a connected socket would drop them. Replies are not filtered by source: anything that is not a valid `RREF,` for an active index is counted and dropped by `Protocol`, which never sees addresses.
 - Every other call is one `Protocol` call plus a `send_to` per returned datagram. Eight motor writes per tick are eight datagrams, which is fine on loopback.
 - `poll` errs only on socket errors; malformed datagrams are `Protocol`'s concern (counted, logged at `debug!`, skipped).
-- `is_no_data` (in `bridge/mod.rs`) treats `WouldBlock` and `ConnectionReset` as "drained". On Windows `ConnectionReset` follows a `send_to` that hit a closed port (X-Plane not running yet). **verify** on Windows; the alternative, disabling `SIO_UDP_CONNRESET`, needs a non-`std` call.
+- `poll` drains until `WouldBlock`. On Windows a `send_to` that hit a closed port (X-Plane not running yet) surfaces as `ConnectionReset` on a later `recv_from` of the unconnected socket ([Spike findings](#spike-findings)); `poll` logs it at `debug!` and keeps draining, since replies may be queued behind it. Each reset is reported once, so the loop still ends. Disabling `SIO_UDP_CONNRESET` instead would need a non-`std` call.
+- The receive buffer is 64 KiB, allocated once at `connect`: no datagram is truncated, which on Windows would be a `recv_from` error rather than a short read. X-Plane's largest reply is 1469 bytes.
 - `Drop` sends `Protocol::close()` so X-Plane stops streaming to a dead port. Send errors are logged and ignored; `Drop` never panics. `Drop` does not release overrides: it does not know which the caller set ([Relationship to Stable Flight](#relationship-to-stable-flight)).
 
 #### Why sans-I/O
@@ -384,9 +384,11 @@ What the backend's issues (stable-flight #351, #352, #79, #302, #309) need from 
 1. Exact override set for a multirotor: `override_throttles` alone, or also `override_joystick` for the models px4xplane uses.
 2. Which per-surface deflection datarefs to write under `override_control_surfaces` for the plane and tailsitter models (stable-flight #333, #348, #349). `DataRefs.txt` names `sim/flightmodel/controls/lail1def` as an example.
 3. Whether `freq` below the frame rate is honored exactly.
-4. The **verify** items, stated where they apply: [Protocol](#protocol) (cross-host replies, int datarefs, write order), [Driver](#driver) (`ConnectionReset` on Windows), [Liveness](#liveness) (subscriptions across a reload, streaming while paused).
+4. The **verify** items, stated where they apply: [Protocol](#protocol) (cross-host replies, int datarefs, write order), [Liveness](#liveness) (subscriptions across a reload, streaming while paused).
 
 ## Spike findings
+
+CI, 2026-10-14: on `windows-latest`, `recv_from` on an unconnected `std::net::UdpSocket` returns `ConnectionReset` after a `send_to` to a closed loopback port (`bridge/tests.rs` `windows_reports_connection_reset`); `poll` stays `Ok` on Linux, macOS, and Windows (`poll_survives_send_to_closed_port`).
 
 X-Plane 12, same host, 2026-10-05. Python probe sending `RREF` from an ephemeral port.
 
