@@ -198,3 +198,19 @@ fn is_send() {
     fn assert_send<T: Send>() {}
     assert_send::<XPlaneUdpBridge>();
 }
+
+/// A send that fails for a reason other than a full buffer reaches the caller;
+/// on drop it is logged, not raised. Unix rejects a send to port 0; Windows
+/// accepts it.
+#[cfg(unix)]
+#[test]
+fn send_error_reaches_caller() {
+    let mut bridge = XPlaneUdpBridge::connect("127.0.0.1:0").unwrap();
+    let err = bridge.subscribe(&position::PHI, hz(100)).unwrap_err();
+    assert!(matches!(err, crate::XPlaneError::Io(_)), "{err:?}");
+    assert!(bridge.write(&overrides::THROTTLES, true).is_err());
+    assert!(bridge.command(&commands::PAUSE_TOGGLE).is_err());
+    assert!(bridge.resubscribe().is_err());
+    assert_eq!(bridge.stats().dropped_sends, 0);
+    drop(bridge);
+}
