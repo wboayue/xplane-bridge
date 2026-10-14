@@ -71,9 +71,11 @@ Code:
 - **One job per part.** Each type and module has one responsibility, describable without "and". The table in `design.md` "Architecture" is the map: new code fits a row or adds one.
 - **Compose, don't extend.** New behavior is a new small part, wired in `Protocol` (the only place parts meet) or layered as a wrapper over `DatarefSource`/`DatarefSink`. No mode flags or optional fields bolted onto existing types.
 - **Depend on traits, keep them small.** Consumers and tests take `impl DatarefSource`/`impl DatarefSink`, never `XPlaneUdpBridge`. Anything implementing them must also work wrapped (`impl<B: DatarefSource> DatarefSource for Wrapper<B>`).
-- **One source of truth.** Each rule, constant, and layout lives once: path rules in `Path`, byte widths in `codec`, wire facts in `design.md` "Protocol". A second copy is a signal to extract; a third similar test becomes a table.
+- **One source of truth.** Each rule, constant, and layout lives once: path rules in `Path`, byte widths in `codec`, wire facts in `design.md` "Protocol". A second copy is a signal to extract; a third similar test becomes a table. Inside a type too: one map, not parallel maps kept in sync; scan on cold paths (subscribe), index on hot paths (per record).
 - **Types over checks.** Encode invariants in types (`Writable`, `Rate`, `Sub<T>`) and validate once at construction, not at each use.
-- **Smallest visibility.** `pub(crate)` by default; `pub` only for what a consumer or a second transport needs.
+- **Smallest visibility.** `pub(crate)` by default; `pub` only for what a consumer or a second transport needs. A type only the crate creates (`Sub`, `Subscriptions`) has no public `new` or `Default`.
+- **Constants are temporaries.** Each use of a `const` is a fresh value dropped at the end of the statement, so an iterator returned by a type used in `const` items owns what it needs (`+ use<..>`) instead of borrowing `self`.
+- **Land parts before their user.** A crate-private item merged ahead of its caller carries `#[cfg_attr(not(test), expect(dead_code, reason = "used by X (#n)"))]`; the PR that adds the caller removes it.
 - **No speculative API.** No parameter, generic, or feature without a consumer asking for it (see "Design against the consumer").
 
 Docs:
@@ -81,6 +83,15 @@ Docs:
 - **Concise.** Short sentences in present tense stating what is true; no filler, hedging, or history (that belongs in commits).
 - **Rustdoc adds what the signature doesn't.** One summary line, then only units, sign, frame, errors, and edge cases; never a restatement of the types.
 - **Comments say why, not what.** No comment that restates the code.
+
+## Plans and reviews
+
+Review every plan before presenting it, and every change before a PR, through four lenses:
+
+- **Duplication:** each rule, value, and piece of state lives once (see "One source of truth").
+- **SRP:** each part keeps one job (see "One job per part").
+- **Composability:** parts combine without borrowing, visibility, or type friction; consumers and later issues can use them as planned.
+- **Performance:** nothing on the per-tick path (`poll`, `handle`, `write`, `Frame::get`) allocates, hashes strings, or scans beyond what `design.md` allows.
 
 ## Testing
 
@@ -94,7 +105,7 @@ Docs:
 
 ## Docs and releases
 
-- Public items have rustdoc with an example. `README.md` is the crate docs, so its usage compiles as a doctest; change it in the same PR as the API.
+- Public items have rustdoc with an example. If the type cannot yet be obtained outside the crate, the example lands with the API that hands it out. `README.md` is the crate docs, so its usage compiles as a doctest; change it in the same PR as the API.
 - `CHANGELOG.md` ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)): every user-facing change adds a bullet under `[Unreleased]`; mark breaking changes **Breaking**.
 - Update `design.md` when a **verify** item is confirmed or an open question is answered; don't leave it describing a protocol detail the code contradicts.
 - `Cargo.toml` metadata mirrors realflight-bridge (license MIT, keywords, categories, `include` list). Check `cargo package --list` before a release.
@@ -105,4 +116,5 @@ Docs:
 - Pass PR bodies with `gh pr create --body-file`; inline heredocs break on apostrophes.
 - No AI attribution lines or footers in commits or PRs.
 - American English spelling in prose, docs, comments, and commit messages.
+- Merge after CI passes: squash with subject `Title (#issue) (#pr)` and delete the branch.
 - Before a PR: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` all clean.
