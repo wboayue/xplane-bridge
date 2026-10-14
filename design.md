@@ -42,12 +42,14 @@ The bridge is sans-I/O: every protocol decision lives in `Protocol`, which never
 
 | Part | Module | Job | I/O |
 |---|---|---|---|
+| `Path` | `path.rs` | Validate a path once (crate-private) | none |
 | `codec` | `codec/` | Encode `RREF`/`DREF`/`CMND`; decode `RREF,` into `(index, value)` records | none |
 | `Dataref`, `Command` | `datarefs/`, `commands.rs` | Name a path; constants | none |
 | `Subscriptions` | `subscriptions.rs` | Allocate indices; track active `Sub` ↔ `Dataref` | none |
 | `Frame`, `FrameBuilder`, `Latest` | `frame.rs` | Merge records from one drain; optionally hold values across frames | none |
 | `Protocol` | `protocol/` | Compose the above: calls → `Datagram`s, received bytes → `Frame`s, `Stats` | none |
 | traits, `XPlaneUdpBridge` | `bridge/mod.rs`, `bridge/udp.rs` | Driver: `std::net::UdpSocket` around a `Protocol` | socket |
+| `FakeXPlane` | `testing.rs` (feature `testing`) | Scripted `DatarefSource`/`DatarefSink` over a `Protocol`, for consumers' tests | none |
 
 `codec` knows bytes, `Subscriptions` knows indices, `FrameBuilder` knows merging; none knows the others. `Protocol` is the only part that wires them together. Consumers depend on the traits `DatarefSource`/`DatarefSink`, not on the driver type.
 
