@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use super::*;
+use crate::codec::test_bytes::{dref, reply, rref};
 use crate::commands;
 use crate::datarefs::{engine, overrides, position};
 
@@ -9,33 +10,6 @@ const THETA: &str = "sim/flightmodel/position/theta";
 
 fn hz(hz: u16) -> Rate {
     Rate::hz(hz).unwrap()
-}
-
-fn padded(path: &str, width: usize) -> Vec<u8> {
-    let mut bytes = path.as_bytes().to_vec();
-    bytes.resize(width, 0);
-    bytes
-}
-
-/// The expected `RREF` request; `freq = 0` unsubscribes.
-fn rref(freq: i32, index: i32, path: &str) -> Vec<u8> {
-    [
-        b"RREF\0".as_slice(),
-        &freq.to_le_bytes(),
-        &index.to_le_bytes(),
-        &padded(path, 400),
-    ]
-    .concat()
-}
-
-/// An `RREF,` reply carrying `records`.
-fn reply(records: &[(i32, f32)]) -> Vec<u8> {
-    let mut bytes = b"RREF,".to_vec();
-    for (index, value) in records {
-        bytes.extend_from_slice(&index.to_le_bytes());
-        bytes.extend_from_slice(&value.to_le_bytes());
-    }
-    bytes
 }
 
 fn bytes(datagrams: &[Datagram]) -> Vec<&[u8]> {
@@ -71,14 +45,6 @@ fn unsubscribe_encodes_freq_zero_once() {
 #[test]
 fn write_encodes_dref() {
     let proto = Protocol::new();
-    let dref = |value: f32, path: &str| {
-        [
-            b"DREF\0".as_slice(),
-            &value.to_le_bytes(),
-            &padded(path, 500),
-        ]
-        .concat()
-    };
     let cases = [
         (proto.write(&position::PHI, -1.5), dref(-1.5, PHI)),
         (

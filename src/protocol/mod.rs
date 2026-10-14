@@ -181,6 +181,7 @@ impl Protocol {
             frames,
             stats,
         } = self;
+        // Counts as `push` consumes: it reads every record, so none go uncounted.
         let kept = records.filter(|&(index, _)| {
             let active = subscriptions.contains(index);
             if !active {
