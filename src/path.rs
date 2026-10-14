@@ -40,10 +40,10 @@ impl Path {
     }
 }
 
-/// A [`Path`] from a literal, checked at compile time.
+/// A [`Path`] from a `&'static str` const expression, checked at compile time.
 #[cfg_attr(not(test), expect(unused_macros, reason = "used by constants (#9)"))]
 macro_rules! static_path {
-    ($path:literal) => {
+    ($path:expr) => {
         const { $crate::path::Path::from_static($path) }
     };
 }
@@ -100,7 +100,10 @@ mod tests {
     #[test]
     fn macro_matches_runtime_constructor() {
         const PHI: Path = static_path!("sim/flightmodel/position/phi");
-        assert_eq!(PHI, Path::new("sim/flightmodel/position/phi").unwrap());
+        const PHI_CONCAT: Path = static_path!(concat!("sim/flightmodel/position/", "phi"));
+        let runtime = Path::new("sim/flightmodel/position/phi").unwrap();
+        assert_eq!(PHI, runtime);
+        assert_eq!(PHI_CONCAT, runtime);
     }
 
     #[test]
@@ -113,5 +116,9 @@ mod tests {
     fn path_error_converts_to_invalid_path() {
         let err = XPlaneError::from(PathError::Empty);
         assert!(matches!(err, XPlaneError::InvalidPath(PathError::Empty)));
+        // Cause is reported once, via `source`, not repeated in `Display`.
+        assert_eq!(err.to_string(), "invalid path");
+        let source = std::error::Error::source(&err).map(ToString::to_string);
+        assert_eq!(source.as_deref(), Some("path is empty"));
     }
 }

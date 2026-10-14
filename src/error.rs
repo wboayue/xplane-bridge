@@ -4,10 +4,10 @@
 #[derive(Debug, thiserror::Error)]
 pub enum XPlaneError {
     /// Socket bind, send, or receive failed.
-    #[error("socket I/O: {0}")]
+    #[error("socket I/O failed")]
     Io(#[from] std::io::Error),
     /// A runtime dataref or command path breaks a path rule.
-    #[error("invalid path: {0}")]
+    #[error("invalid path")]
     InvalidPath(#[from] PathError),
     /// The `i32` subscription index space is exhausted.
     #[error("subscription index space exhausted")]
