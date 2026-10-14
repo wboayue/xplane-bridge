@@ -22,7 +22,7 @@ This document states what is true; how it was established lives in [Spike findin
 
 This section is the single source for wire-level facts; later sections refer to it.
 
-**Transport.** X-Plane listens on UDP `49000` (configurable in **Settings → Network**). It replies to the source address and port of the socket that sent the request, so one socket serves both directions. Replies come *from* port `49001`, not `49000`. Requests to the host's LAN address work like loopback; from a second host: **verify** (#34).
+**Transport.** X-Plane listens on UDP `49000` (configurable in **Settings → Network**). It replies to the source address and port of the socket that sent the request, so one socket serves both directions. Replies come *from* port `49001`, not `49000`. A client on a second host on the LAN works like loopback: replies reach its source address and port.
 
 **Encoding.** Integers and floats are little-endian. Strings are null-padded to a fixed width.
 
@@ -195,15 +195,18 @@ impl Protocol {
     /// The merged frame since the last `finish`, or `None`.
     pub fn finish(&mut self) -> Option<Frame>;
 
+    /// The transport dropped an outgoing datagram; counts in `Stats::dropped_sends`.
+    pub fn dropped_send(&mut self);
     pub fn stats(&self) -> Stats;
     pub fn subscriptions(&self) -> &Subscriptions;
 }
 
 /// Counters since `Protocol::new`. `packets` counts well-formed `RREF,` replies,
 /// `malformed` everything else, so received datagrams are `packets + malformed`.
-/// `resubscribes` counts calls, including with no subscriptions.
+/// `resubscribes` counts calls, including with no subscriptions. `dropped_sends`
+/// counts datagrams the transport reported dropping.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Stats { pub packets: u64, pub malformed: u64, pub dropped_records: u64, pub resubscribes: u64 }
+pub struct Stats { pub packets: u64, pub malformed: u64, pub dropped_records: u64, pub resubscribes: u64, pub dropped_sends: u64 }
 ```
 
 Each call maps to exactly one outgoing datagram (`close` and `resubscribe` to one per subscription), so methods *return* the datagram instead of queueing it; there is no outbox and no callback. `Protocol` is public: it is the whole protocol for anyone bringing their own socket (`socket2`, `mio`, an embedded stack), and it is what the tests exercise.
@@ -306,8 +309,8 @@ impl DatarefSource for XPlaneUdpBridge {
 
 Socket rules:
 
-- `connect(addr: SocketAddr) -> Result<Self>` binds an ephemeral port on the unspecified address of `addr`'s family (`0.0.0.0` or `[::]`, so cross-host works), sets the socket non-blocking, and stores `addr`. No handshake exists, so "connected" only means the socket is ready. The socket is never `connect()`ed, because replies come from `49001` ([Protocol](#protocol)) and a connected socket would drop them. Replies are not filtered by source: anything that is not a valid `RREF,` for an active index is counted and dropped by `Protocol`, which never sees addresses.
-- Every other call is one `Protocol` call plus a `send_to` per returned datagram. Eight motor writes per tick are eight datagrams, which is fine on loopback.
+- `connect(addr: impl ToSocketAddrs) -> Result<Self>` resolves `addr` once to its first IPv4 address, else its first address (so a hostname works; mDNS names such as `oya.local` list link-local IPv6 first, and X-Plane is reached over IPv4: **verify** whether it listens on IPv6 at all), then binds an ephemeral port on the unspecified address of `addr`'s family (`0.0.0.0` or `[::]`, so cross-host works), creates the socket through `socket2` with a 64 KiB send buffer, sets it non-blocking, and stores `addr`. macOS's default UDP send buffer is 9216 bytes; over Wi-Fi a non-blocking burst of 413-byte `RREF`s hits `WouldBlock` on the fifth, so a subscribe burst failed without it ([Spike findings](#spike-findings)). No handshake exists, so "connected" only means the socket is ready. The socket is never `connect()`ed, because replies come from `49001` ([Protocol](#protocol)) and a connected socket would drop them. Replies are not filtered by source: anything that is not a valid `RREF,` for an active index is counted and dropped by `Protocol`, which never sees addresses.
+- Every other call is one `Protocol` call plus a `send_to` per returned datagram. A `send_to` that returns `WouldBlock` is dropped and recorded with `Protocol::dropped_send`, never retried: waiting would block the caller, and the consumer heals a lost `RREF` with `resubscribe` and a lost `DREF` with the next write. Eight motor writes per tick are eight datagrams, which is fine on loopback.
 - `poll` errs only on socket errors; malformed datagrams are `Protocol`'s concern (counted, logged at `debug!`, skipped).
 - `poll` drains until `WouldBlock`. On Windows a `send_to` that hit a closed port (X-Plane not running yet) surfaces as `ConnectionReset` on a later `recv_from` of the unconnected socket ([Spike findings](#spike-findings)); `poll` logs it at `debug!` and keeps draining, since replies may be queued behind it. Each reset is reported once, so the loop still ends. Disabling `SIO_UDP_CONNRESET` instead would need a non-`std` call.
 - The receive buffer is 64 KiB, allocated once at `connect`: no datagram is truncated, which on Windows would be a `recv_from` error rather than a short read. X-Plane's largest reply is 1469 bytes.
@@ -381,6 +384,13 @@ What the backend's issues (stable-flight #351, #352, #79, #302, #309) need from 
 - **Shutdown.** Handing control back means writing every override the backend set back to `0`, then dropping the bridge. The bridge's `Drop` only unsubscribes.
 
 ## Spike findings
+
+X-Plane 12.4.3 on another Mac (`oya.local`, 192.168.4.96) over Wi-Fi, 2026-10-14. Python bursts and `examples/probe.rs`.
+
+- **Second host.** An `RREF` from 192.168.4.138, ephemeral port 55028, drew replies from `192.168.4.96:49001` to that address and port, with X-Plane's **Settings → Network** unchanged; `probe` streamed all 21 subscriptions at about 105 packets/s.
+- **Send buffer.** From macOS, 21 back-to-back 413-byte datagrams on a non-blocking socket with the default `SO_SNDBUF` of 9216 hit `WouldBlock` on the fifth, 3 of 3 runs; with 65536 all 21 went out, 3 of 3. `probe` subscribing 21 datarefs failed on its first burst until the driver set the larger buffer.
+- **Burst loss.** With the larger buffer, `probe` streamed about 105 packets/s, none malformed, no dropped sends. In 3 of 5 runs some of the 21 subscriptions never streamed (`theta`; `psi`; `theta`, `psi`, `lat_ref`, `lon_ref`), though X-Plane answered each subscribed alone. A Python burst of 18 back-to-back `RREF`s lost 0–3 (`theta`, `psi`, `P`: always early in the burst) in 2 of 4 trials; spaced 1 ms apart, none in 4. X-Plane drops `RREF`s that arrive in a burst; `Stats` cannot see it. A consumer that needs every subscription resubscribes until each has a value: `probe`, resubscribing every 250 ms while any of 21 had none (5–10 missing at first), had all of them after 1–5 resubscribes in 3 of 3 runs.
+- **Resolution.** `oya.local` resolves to a link-local IPv6 address first, then a global IPv6, then 192.168.4.96; `localhost` to `::1` first. X-Plane's `BECN` beacon came from 192.168.4.96, advertising port 49000.
 
 X-Plane 12, same host, 2026-10-14, Alia 250. A throwaway spike tool on the public API (`Latest`, one line per second or per 100 ms), 100 Hz subscriptions unless noted.
 

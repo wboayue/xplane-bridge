@@ -64,7 +64,7 @@ tests/xplane.rs          #[ignore]d tests against a running X-Plane, public API 
 - **Only drivers touch sockets.** `Subscriptions`, `FrameBuilder`, and `Protocol` are pure and unit-tested without I/O; driver tests are a few loopback smoke tests.
 - **Codec is pure.** Encode/decode take and return byte slices or arrays; no sockets, no state. Packet layouts are in `design.md`; byte widths (400 for `RREF` paths, 500 for `DREF`) are named constants.
 - **Datarefs and commands are constants, not strings in call sites.** Add datarefs to `src/datarefs/` under the module matching their X-Plane path prefix, typed from `DataRefs.txt` (`Dataref<T, A>` or `DatarefArray<T, A, N>` with the right value type and `Writable` only if writable), with a doc comment giving units and sign; commands go in `src/commands.rs`. Verify the path against `Resources/plugins/DataRefs.txt` before adding it, and add the constant to the table in `src/datarefs/constants_tests.rs` (commands: `ALL` in `src/commands.rs`) so the `constants_match_*` tests cover it.
-- **Dependencies stay minimal.** `thiserror`, `log`. Dev-dependencies for tests (e.g. `approx`) are fine. Anything else needs a reason in the PR.
+- **Dependencies stay minimal.** `thiserror`, `log`, and `socket2` for socket options `std` lacks (the send buffer size). Dev-dependencies for tests (e.g. `approx`) are fine. Anything else needs a reason in the PR.
 - Logging: `log` crate; `info!` for lifecycle (bind, subscribe, drop), `debug!`/`trace!` inside the poll/write path. Nothing printed per tick at `info`.
 
 ## Style

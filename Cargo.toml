@@ -19,6 +19,8 @@ testing = []
 [dependencies]
 thiserror = "2"
 log = "0.4"
+# Sets the send buffer size, which `std::net::UdpSocket` cannot.
+socket2 = "0.6.5"
 
 [dev-dependencies]
 approx = "0.5"

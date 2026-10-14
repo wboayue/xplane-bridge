@@ -57,7 +57,6 @@ xplane-bridge = { git = "https://github.com/wboayue/xplane-bridge" }
 
 ```rust,no_run
 use std::error::Error;
-use std::net::SocketAddr;
 use std::thread;
 use std::time::Duration;
 
@@ -65,8 +64,7 @@ use xplane_bridge::{DatarefSink, DatarefSource, Latest, Rate, XPlaneUdpBridge, d
 
 fn main() -> Result<(), Box<dyn Error>> {
     // X-Plane on this machine, default UDP port.
-    let addr: SocketAddr = "127.0.0.1:49000".parse()?;
-    let mut bridge = XPlaneUdpBridge::connect(addr)?;
+    let mut bridge = XPlaneUdpBridge::connect("127.0.0.1:49000")?;
 
     // Ask X-Plane to stream roll and roll rate every simulator frame: it sends
     // at most once per frame, so ask for well above the frame rate. Each handle
@@ -204,6 +202,7 @@ UDP has no connection, so the bridge reports facts and leaves policy to you:
 
 * **Silence.** `received_at` on a frame (or the `Instant` from `Latest::get`) gives the age of the newest state; pick your own timeout.
 * **Restart or late start.** X-Plane forgets every subscription when it restarts, and one that was not running when you subscribed never received them. After a silence, call `resubscribe()`: handles stay valid, and repeating it is harmless. `stats().resubscribes` counts the calls.
+* **Lost subscriptions.** X-Plane can drop some `RREF`s when many arrive at once, so a subscription may never stream while the rest do. Until every handle has a value (`Latest::get` is `Some`), call `resubscribe()` now and then.
 * **Pause.** Subscribe to `datarefs::time::PAUSED` to see whether the simulator is paused. Whether X-Plane keeps streaming while paused is not yet verified; if it doesn't, a pause looks like silence.
 * **Shutdown.** Dropping the bridge unsubscribes. Write any overrides you set back to `false` first.
 

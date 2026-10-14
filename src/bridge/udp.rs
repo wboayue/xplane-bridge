@@ -1,10 +1,11 @@
 //! The `std::net::UdpSocket` driver: moves `Protocol`'s datagrams, nothing more.
 
 use std::io::{self, ErrorKind};
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::Instant;
 
 use log::{debug, info, warn};
+use socket2::{Domain, Socket, Type};
 
 use crate::{
     Command, Datagram, Dataref, DatarefSink, DatarefSource, Frame, Protocol, Rate, Stats, Sub,
@@ -15,18 +16,23 @@ use crate::{
 /// truncated (on Windows truncation is a `recv_from` error, not a short read).
 const RECV_LEN: usize = 65_535;
 
+/// Send buffer size. macOS defaults to 9216 bytes, which over Wi-Fi fills
+/// after 4 back-to-back `RREF`s; this holds a subscribe burst of over 100.
+const SEND_BUFFER: usize = 65_536;
+
 /// X-Plane over UDP: a [`Protocol`] driven through a non-blocking
 /// `std::net::UdpSocket`.
+///
+/// A send that finds the socket's send buffer full is dropped, not waited on,
+/// and counted in [`Stats::dropped_sends`].
 ///
 /// Dropping it unsubscribes every active subscription. It does not release
 /// overrides; write those back first.
 ///
 /// ```no_run
-/// use std::net::SocketAddr;
 /// use xplane_bridge::{DatarefSource, Rate, XPlaneUdpBridge, datarefs};
 ///
-/// let addr: SocketAddr = "127.0.0.1:49000".parse()?;
-/// let mut bridge = XPlaneUdpBridge::connect(addr)?;
+/// let mut bridge = XPlaneUdpBridge::connect("127.0.0.1:49000")?;
 /// let phi = bridge.subscribe(&datarefs::position::PHI, Rate::hz(100).expect("nonzero"))?;
 /// if let Some(frame) = bridge.poll()? {
 ///     let roll_deg: Option<f32> = frame.get(phi);
@@ -41,10 +47,23 @@ pub struct XPlaneUdpBridge {
     buf: Box<[u8]>,
 }
 
+/// The first IPv4 address `addr` resolves to, else its first address.
+fn resolve(addr: impl ToSocketAddrs) -> io::Result<SocketAddr> {
+    let addrs: Vec<SocketAddr> = addr.to_socket_addrs()?.collect();
+    addrs
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or(addrs.first())
+        .copied()
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "address resolved to nothing"))
+}
+
 impl XPlaneUdpBridge {
     /// A bridge to X-Plane at `addr` (its UDP port, default 49000).
     ///
-    /// Binds an ephemeral port on the unspecified address of `addr`'s family, so
+    /// `addr` is anything [`ToSocketAddrs`] takes, such as `"oya.local:49000"`;
+    /// a hostname is resolved once, here, to its first IPv4 address (X-Plane
+    /// listens on IPv4; mDNS names list IPv6 first), else its first address. Binds an ephemeral port on the unspecified address of `addr`'s family, so
     /// replies from another host arrive. The socket is never `connect()`ed:
     /// X-Plane replies from a different port (49001), which a connected socket
     /// would drop. No handshake exists, so success means only that the socket is
@@ -52,14 +71,19 @@ impl XPlaneUdpBridge {
     ///
     /// # Errors
     ///
-    /// [`XPlaneError::Io`] if the socket cannot be bound or made non-blocking.
-    pub fn connect(addr: SocketAddr) -> Result<Self, XPlaneError> {
+    /// [`XPlaneError::Io`] if `addr` does not resolve, or the socket cannot be
+    /// created, sized, bound, or made non-blocking.
+    pub fn connect(addr: impl ToSocketAddrs) -> Result<Self, XPlaneError> {
+        let addr = resolve(addr)?;
         let local: SocketAddr = match addr {
             SocketAddr::V4(_) => (Ipv4Addr::UNSPECIFIED, 0).into(),
             SocketAddr::V6(_) => (Ipv6Addr::UNSPECIFIED, 0).into(),
         };
-        let sock = UdpSocket::bind(local)?;
+        let sock = Socket::new(Domain::for_address(local), Type::DGRAM, None)?;
+        sock.set_send_buffer_size(SEND_BUFFER)?;
+        sock.bind(&local.into())?;
         sock.set_nonblocking(true)?;
+        let sock = UdpSocket::from(sock);
         if let Ok(local) = sock.local_addr() {
             info!("bound {local} for X-Plane at {addr}");
         }
@@ -71,9 +95,21 @@ impl XPlaneUdpBridge {
         })
     }
 
-    fn send(&self, datagram: &Datagram) -> io::Result<()> {
-        self.sock.send_to(datagram.as_bytes(), self.addr)?;
-        Ok(())
+    /// Sends `datagram`, or drops and counts it if the send buffer is full:
+    /// waiting would block the caller.
+    fn send(&mut self, datagram: &Datagram) -> io::Result<()> {
+        match self.sock.send_to(datagram.as_bytes(), self.addr) {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                debug!(
+                    "send buffer full; dropped {}-byte datagram",
+                    datagram.as_bytes().len()
+                );
+                self.proto.dropped_send();
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -131,12 +167,14 @@ impl DatarefSink for XPlaneUdpBridge {
         dataref: &Dataref<T, Writable>,
         value: T,
     ) -> Result<(), XPlaneError> {
-        self.send(&self.proto.write(dataref, value))?;
+        let datagram = self.proto.write(dataref, value);
+        self.send(&datagram)?;
         Ok(())
     }
 
     fn command(&mut self, command: &Command) -> Result<(), XPlaneError> {
-        self.send(&self.proto.command(command))?;
+        let datagram = self.proto.command(command);
+        self.send(&datagram)?;
         Ok(())
     }
 }

@@ -155,6 +155,14 @@ fn close_unsubscribes_exactly_active() {
 }
 
 #[test]
+fn counts_dropped_sends() {
+    let mut proto = Protocol::new();
+    proto.dropped_send();
+    proto.dropped_send();
+    assert_eq!(proto.stats().dropped_sends, 2);
+}
+
+#[test]
 fn resubscribe_resends_active_at_current_rate() {
     let mut proto = Protocol::new();
     assert!(proto.resubscribe().is_empty());
