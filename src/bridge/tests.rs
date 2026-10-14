@@ -200,7 +200,9 @@ fn is_send() {
 }
 
 /// A send that fails for a reason other than a full buffer reaches the caller;
-/// on drop it is logged, not raised. No OS sends to port 0.
+/// on drop it is logged, not raised. Unix rejects a send to port 0; Windows
+/// accepts it.
+#[cfg(unix)]
 #[test]
 fn send_error_reaches_caller() {
     let mut bridge = XPlaneUdpBridge::connect("127.0.0.1:0").unwrap();
