@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod bridge;
 mod codec;
 pub mod commands;
 pub mod datarefs;
@@ -9,9 +10,12 @@ mod path;
 mod protocol;
 mod rate;
 mod subscriptions;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 #[cfg(test)]
 mod xplane_files;
 
+pub use bridge::{DatarefSink, DatarefSource};
 pub use codec::Datagram;
 pub use commands::Command;
 pub use datarefs::{Dataref, DatarefArray, ReadOnly, Value, Writable};

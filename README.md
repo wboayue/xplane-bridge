@@ -23,7 +23,7 @@ It is the X-Plane counterpart of [realflight-bridge](https://github.com/wboayue/
 * **Sans-I/O.** The whole protocol lives in `Protocol`, which never touches a socket: calls return `Datagram`s to send, received bytes go in through `handle`. `XPlaneUdpBridge` is a thin driver that moves those datagrams over a `std::net::UdpSocket`. Bring your own socket (`socket2`, `mio`, an embedded stack) by driving `Protocol` yourself.
 * **Sync, `std` only.** No async runtime; reads are non-blocking so a fixed-rate control loop never stalls on the simulator. For async, drive `Protocol` from a `tokio::net::UdpSocket` yourself.
 * **Raw simulator units.** Values are returned as X-Plane reports them (degrees, degrees per second, OpenGL local frame: x east, y up, z south). Frame and unit conversion belong to the caller.
-* **Small traits.** Consumers depend on `DatarefSource` (subscribe, poll) and `DatarefSink` (write, command), not on the driver; controllers can be tested against fakes without a simulator.
+* **Small traits.** Consumers depend on `DatarefSource` (subscribe, poll) and `DatarefSink` (write, command), not on the driver; controllers can be tested against `testing::FakeXPlane` without a simulator ([Testing without a simulator](#testing-without-a-simulator)).
 * **Typed datarefs and handles.** Each dataref constant carries its value type (`f32`, `i32`, `bool`) and whether it is writable. `subscribe` returns a typed `Sub<T>`, so `frame.get(sub)` returns `Option<T>` with no string lookup; writing a read-only dataref or a wrong-typed value does not compile.
 * **Typed errors.** Fallible calls return `Result<_, XPlaneError>` (`thiserror`); the library never panics on simulator input, and a malformed packet is counted in `stats()` and skipped, never surfaced as an error.
 
@@ -158,6 +158,40 @@ for dg in proto.close() {
 }
 # Ok(())
 # }
+```
+
+### Testing without a simulator
+
+With feature `testing`, `testing::FakeXPlane` implements both traits: queue frames for `poll`, then check what was written. Write code against `impl DatarefSource`/`impl DatarefSink` and it runs unchanged against the fake and the real bridge.
+
+```toml
+[dev-dependencies]
+xplane-bridge = { git = "https://github.com/wboayue/xplane-bridge", features = ["testing"] }
+```
+
+```rust
+use std::io::ErrorKind;
+use std::time::Instant;
+
+use xplane_bridge::testing::FakeXPlane;
+use xplane_bridge::{DatarefSink, DatarefSource, Frame, Rate, datarefs};
+
+let mut fake = FakeXPlane::new();
+let phi = fake.subscribe(&datarefs::position::PHI, Rate::hz(100).expect("nonzero"))?;
+
+// One frame, then silence.
+fake.push_frame(Frame::empty(Instant::now()).with(phi, 12.5));
+assert_eq!(fake.poll()?.and_then(|frame| frame.get(phi)), Some(12.5));
+assert_eq!(fake.poll()?, None);
+
+// Writes and commands are recorded.
+fake.write(&datarefs::overrides::THROTTLES, true)?;
+assert_eq!(fake.last_write(&datarefs::overrides::THROTTLES), Some(true));
+
+// Every call fails until cleared.
+fake.fail_with(Some(ErrorKind::ConnectionReset));
+assert!(fake.poll().is_err());
+# Ok::<(), xplane_bridge::XPlaneError>(())
 ```
 
 ### Timing

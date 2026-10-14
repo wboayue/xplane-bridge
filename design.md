@@ -269,7 +269,7 @@ pub trait DatarefSink {
 }
 ```
 
-An actuator-only component takes `impl DatarefSink`; a state estimator takes `impl DatarefSource`. `XPlaneUdpBridge` implements both. A fake source is a `Protocol` plus a queue of `Frame`s.
+An actuator-only component takes `impl DatarefSink`; a state estimator takes `impl DatarefSource`. `XPlaneUdpBridge` implements both, and so does `testing::FakeXPlane` (feature `testing`): a `Protocol` for subscriptions, a queue of `Frame`s (or silent polls) for `poll`, and a record of writes and commands. A scripted `Io` error fails every call until cleared. Its frames bypass `Protocol::handle`, so only `Stats::resubscribes` counts. It is an owned, `Send` value; a consumer's tests reach it through whatever holds it.
 
 The split follows who uses what, not one trait per method. `DatarefSource` keeps subscription management, `poll`, and `stats` together because the one component that reads state (the backend's `StateSource`) subscribes at startup, polls every tick, and resubscribes and reports stats on silence. Splitting it would make every fake implement two traits for one role.
 
