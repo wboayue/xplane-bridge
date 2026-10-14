@@ -6,7 +6,7 @@ Guidance for AI assistants and humans working in `xplane-bridge`. `design.md` ha
 
 A small sans-I/O, sync Rust library that talks X-Plane's UDP dataref protocol (`RREF`/`DREF`/`CMND`) so an external flight controller can read simulator state and drive the aircraft. Sibling of [realflight-bridge](https://github.com/wboayue/realflight-bridge); consumed by the `stable-flight-sitl-xplane` backend in [stable-flight](https://github.com/wboayue/stable-flight), but independent of both.
 
-Status: pre-release. The crate skeleton may not exist yet; `design.md` is the spec until it does.
+Status: pre-release, not yet on crates.io.
 
 Design against the consumer, not speculatively. Before adding API, check stable-flight's open issues for the X-Plane backend (#351 backend, #352 mission demo, #89) and the ones that touch host timing or state (#79 sensor synthesis, #302/#309 stalls and reconnects): `gh issue list -R wboayue/stable-flight`. Its `StateSource`/`Actuator` traits and `RealTimeRunner` are sync, which is why this crate is.
 
