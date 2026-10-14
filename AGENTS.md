@@ -16,9 +16,10 @@ Design against the consumer, not speculatively. Before adding API, check stable-
 cargo build
 cargo test                          # codec + loopback bridge tests, no simulator needed
 cargo test -- --ignored             # tests that need a running X-Plane
+XPLANE_ADDR=127.0.0.1:49000 cargo test --test xplane -- --ignored   # just the simulator tests
 XPLANE_DIR=~/Library/Application\ Support/Steam/steamapps/common/X-Plane\ 12 \
   cargo test constants_match -- --ignored   # constants vs DataRefs.txt/Commands.txt
-cargo run --example probe -- --host 127.0.0.1:49000   # spike/manual check against X-Plane
+cargo run --example probe -- --host 127.0.0.1:49000 [--spin]   # spike/manual check against X-Plane
 cargo fmt
 cargo clippy --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features   # as CI runs it
@@ -48,7 +49,8 @@ src/protocol/            Protocol, Stats: sans-I/O core, calls → datagrams, by
 src/bridge/              DatarefSource/DatarefSink traits, udp.rs (driver), tests.rs
 src/xplane_files.rs      test-only: reads DataRefs.txt and Commands.txt
 src/testing.rs           FakeXPlane (feature `testing`)
-examples/probe.rs
+examples/probe.rs        manual check against X-Plane
+tests/xplane.rs          #[ignore]d tests against a running X-Plane, public API only
 ```
 
 ## Rules
@@ -99,7 +101,7 @@ Review every plan before presenting it, and every change before a PR, through fo
 - `Subscriptions`, `FrameBuilder`, and `Latest` get plain unit tests, no sockets.
 - `Protocol` carries the bulk of behavior tests in `src/protocol/tests.rs`: bytes in, `Datagram`s out, asserted byte-for-byte. No sockets.
 - Socket behavior is tested against a loopback `UdpSocket` acting as a fake X-Plane in `src/bridge/tests.rs`; the fake replies from a different port than it listens on, as X-Plane does. Keep these to socket concerns (drain, `ConnectionReset`, drop). No mocking framework; use `testing::FakeXPlane` (built on `Protocol` and `Frame::empty(t).with(sub, value)`) rather than writing another fake.
-- Anything that needs the real simulator is `#[ignore]` with a one-line reason.
+- Anything that needs the real simulator is `#[ignore]` with a one-line reason; tests that need it running live in `tests/xplane.rs` and find it at `XPLANE_ADDR`.
 - Name tests after the behavior they protect (`merges_drained_packets`), not the function.
 - Floats: `approx::assert_relative_eq!` for computed values; `assert_eq!` is fine for values passed through unchanged (stored and read back).
 

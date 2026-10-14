@@ -30,7 +30,7 @@ This section is the single source for wire-level facts; later sections refer to 
 |---|---|---|---|
 | `RREF` | → X-Plane | `"RREF\0"`, `i32 freq`, `i32 index`, `char[400] path` (413 bytes) | Subscribe `path` at `freq` per second under caller-chosen `index`. `freq = 0` unsubscribes. The same path under different indices is sent once per index. Whether a 400-byte path with no terminator is accepted is untested, so the bridge caps paths at 399. |
 | `RREF,` | ← X-Plane | `"RREF,"`, then repeated `{ i32 index, f32 value }` | Holds at most 183 records (1469 bytes). Up to 183 subscriptions arrive in one packet per frame; larger sets spill into extra packets, and not every record may arrive every frame. Rate is capped at the simulator frame rate whatever `freq` asks for. |
-| `DREF` | → X-Plane | `"DREF\0"`, `f32 value`, `char[500] path` (509 bytes) | Write one value. Array elements address as `path[i]`. Fire-and-forget; no ack. **verify** float conversion for int datarefs (e.g. `override_throttles`) and that writes apply in arrival order within a frame. |
+| `DREF` | → X-Plane | `"DREF\0"`, `f32 value`, `char[500] path` (509 bytes) | Write one value. Array elements address as `path[i]`. Fire-and-forget; no ack. An int dataref (e.g. `override_throttles`) takes the float value converted ([Spike findings](#spike-findings)). **verify** that writes apply in arrival order within a frame. |
 | `CMND` | → X-Plane | `"CMND\0"`, null-terminated `path` | Trigger a command, e.g. `sim/operation/pause_toggle`. |
 | `BECN` | ← multicast `239.255.1.1:49707` | beacon | Discovery. Out of scope for v1; the caller passes an address. |
 
@@ -366,7 +366,7 @@ Invalid rates and unwritable datarefs are type errors, not runtime errors, so `X
 - `datarefs/`, `frame.rs`, `subscriptions.rs`: unit tests for `Path` rules (empty, 399 accepted and 400 rejected, non-ASCII, NUL), `Value` round trips (`i32` rounding, `bool` from nonzero), `DatarefArray::at` bounds, index allocation, handle reuse on re-subscribe (including `at(0)` vs the same path built by hand), no index reuse after unsubscribe, merging across packets, `Latest` hold behavior. No sockets.
 - `protocol/tests.rs`: the bulk of the behavior tests. Feed `Protocol` byte vectors and assert the returned `Datagram`s byte-for-byte: subscribe/unsubscribe/write/command round trips, malformed input counted and skipped, records for inactive indices dropped and counted, split replies merged by `finish`, `close` emitting one `freq = 0` per active sub, `resubscribe` re-emitting each active `RREF` at its current rate and none for removed subs. No sockets.
 - `bridge/tests.rs`: a loopback `UdpSocket` as fake X-Plane, replying from a different port than it listens on. Only socket behavior: draining until `WouldBlock`, `ConnectionReset`, datagrams actually sent, unsubscribe on drop.
-- `examples/probe.rs` doubles as the manual test: run against X-Plane with a multirotor loaded, confirm attitude signs and that `override_throttles` + `ENGN_thro_use` spin the motors. Anything `#[ignore]`d needs the simulator and says so.
+- `examples/probe.rs` doubles as the manual test: run against X-Plane with a multirotor loaded, confirm attitude signs and that `override_throttles` + `ENGN_thro_use` spin the motors (`--spin`). Anything `#[ignore]`d needs the simulator and says so; `tests/xplane.rs` holds those that need it running (`XPLANE_ADDR`): streaming a subscription, and a `DREF` write read back through `RREF`.
 
 ## Relationship to Stable Flight
 
@@ -384,9 +384,17 @@ What the backend's issues (stable-flight #351, #352, #79, #302, #309) need from 
 1. Exact override set for a multirotor: `override_throttles` alone, or also `override_joystick` for the models px4xplane uses.
 2. Which per-surface deflection datarefs to write under `override_control_surfaces` for the plane and tailsitter models (stable-flight #333, #348, #349). `DataRefs.txt` names `sim/flightmodel/controls/lail1def` as an example.
 3. Whether `freq` below the frame rate is honored exactly.
-4. The **verify** items, stated where they apply: [Protocol](#protocol) (cross-host replies, int datarefs, write order), [Liveness](#liveness) (subscriptions across a reload, streaming while paused).
+4. The **verify** items, stated where they apply: [Protocol](#protocol) (cross-host replies, write order), [Liveness](#liveness) (subscriptions across a reload, streaming while paused).
 
 ## Spike findings
+
+X-Plane 12, same host, 2026-10-14. `examples/probe.rs` and `tests/xplane.rs`, Alia 250 loaded.
+
+- **Quaternion.** On the ground, at `psi` 156.88°, `theta` −0.84°, `phi` −0.56°, `q` read `[0.200, 0.006, −0.006, 0.980]`; in flight, at `psi` 179.21°, `theta` 21.65°, `phi` 20.43°, it read `[0.040, −0.184, 0.175, 0.966]`. Each matches the yaw-pitch-roll (z-y-x) quaternion of its angles to three places. So `q` is `[w, x, y, z]`, rotating north-east-down to body, the same attitude as `psi`/`theta`/`phi`, not relative to the OpenGL local frame.
+- **Signs.** Rolling right, pitching up, and turning right drove `phi`, `theta`, `psi` and `P`, `Q`, `R` positive, each rate with the sign of its angle's change; climbing raised `local_y`.
+- **Int datarefs.** `DREF` of 1.0 then 0.0 to `override_throttles` (`int`) read back through `RREF` as 1 then 0 (`write_reads_back`).
+- **Throttle override.** `override_throttles` alone, with 0.2 written to every `ENGN_thro_use` element, spun the Alia's five props on the ground: elements 0–3 together, element 4 separately (likely the pusher). On release, X-Plane's own throttle values returned within 0.5 s.
+- **Streaming.** 100 Hz subscriptions produced 50–55 packets/s over a 58 s run, none malformed.
 
 CI, 2026-10-14: on `windows-latest`, `recv_from` on an unconnected `std::net::UdpSocket` returns `ConnectionReset` after a `send_to` to a closed loopback port (`bridge/tests.rs` `windows_reports_connection_reset`); `poll` stays `Ok` on Linux, macOS, and Windows (`poll_survives_send_to_closed_port`).
 
@@ -414,4 +422,4 @@ X-Plane 12 `DataRefs.txt` (header dated 2026-06-24), 2026-10-13:
 - **Throttle target.** `override_throttles` reads "Use ENGN_thro_use to control them", so `ENGN_thro_use` is the write target. It is `float[16]`.
 - **Access.** `phi`, `P`, `local_x`, `local_ax`, `q` (`float[4]`), and `total_running_time_sec` are writable; `latitude` and `sim/time/paused` are not.
 - **Constants.** Every constant in `datarefs` matches its path, type, and access here, and `pause_toggle` and `reset_flight` are in `Commands.txt`; the `#[ignore]`d `constants_match_*` tests recheck this with `XPLANE_DIR` set.
-- **Quaternion order.** `DataRefs.txt` does not give `q`'s component order; `position::QUATERNION` documents `[w, x, y, z]`, the SDK convention. **verify** with the probe.
+- **Quaternion order.** `DataRefs.txt` does not give `q`'s component order or frame.

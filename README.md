@@ -213,7 +213,7 @@ Named constants for the datarefs a flight controller needs live in `datarefs`, o
 
 | Module | Dataref paths |
 |---|---|
-| `position` | `phi`, `theta`, `psi` (deg); `P`, `Q`, `R` (deg/s, body); `local_x/y/z` (m), `local_vx/vy/vz` (m/s), `local_ax/ay/az` (m/s²), all OpenGL local frame; `latitude`, `longitude` (deg), `elevation` (m MSL); `lat_ref`, `lon_ref` (deg, origin of the local frame); `q` (quaternion) |
+| `position` | `phi`, `theta`, `psi` (deg); `P`, `Q`, `R` (deg/s, body); `local_x/y/z` (m), `local_vx/vy/vz` (m/s), `local_ax/ay/az` (m/s²), all OpenGL local frame; `latitude`, `longitude` (deg), `elevation` (m MSL); `lat_ref`, `lon_ref` (deg, origin of the local frame); `q` (quaternion `[w, x, y, z]`, north-east-down to body) |
 | `engine` | `ENGN_thro_use[16]` (0–1 per engine) |
 | `joystick` | `yoke_roll_ratio`, `yoke_pitch_ratio`, `yoke_heading_ratio` (−1 to 1) |
 | `overrides` | `override_throttles`, `override_joystick`, `override_control_surfaces` |
@@ -227,7 +227,9 @@ Any other dataref can be used by path with `Dataref::<f32>::new("sim/...")?` (or
 cargo test
 ```
 
-The codec and `Protocol` are tested without sockets (bytes in, datagrams out); the UDP driver has a few loopback tests against a fake X-Plane. Tests that need a running X-Plane are `#[ignore]`d; run them with `cargo test -- --ignored` while X-Plane is up. Set `XPLANE_DIR` to the X-Plane 12 install directory to also check the constants against its `DataRefs.txt` and `Commands.txt`.
+The codec and `Protocol` are tested without sockets (bytes in, datagrams out); the UDP driver has a few loopback tests against a fake X-Plane. Tests that need a running X-Plane are `#[ignore]`d; run them with `cargo test -- --ignored` while X-Plane is up (at `XPLANE_ADDR`, default `127.0.0.1:49000`). Set `XPLANE_DIR` to the X-Plane 12 install directory to also check the constants against its `DataRefs.txt` and `Commands.txt`.
+
+For a manual check against a running X-Plane, run `cargo run --example probe`; see [`examples/probe.rs`](https://github.com/wboayue/xplane-bridge/blob/main/examples/probe.rs) for its options.
 
 ## License
 

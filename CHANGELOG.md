@@ -18,3 +18,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Protocol` and `Stats`: the sans-I/O protocol core (#12).
 - `DatarefSource` and `DatarefSink` traits; `testing::FakeXPlane` behind feature `testing` (#13).
 - `XPlaneUdpBridge`: the `std::net::UdpSocket` driver (#14).
+- `probe` example and `#[ignore]`d tests against a running X-Plane (#15).

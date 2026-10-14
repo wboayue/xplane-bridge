@@ -24,6 +24,8 @@ log = "0.4"
 
 [dev-dependencies]
 approx = "0.5"
+# `probe` example: releases the throttle override on Ctrl-C.
+ctrlc = "3.5"
 # Enables `testing` for doctests, so plain `cargo test` runs the `FakeXPlane` examples.
 xplane-bridge = { path = ".", features = ["testing"] }
 
