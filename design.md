@@ -107,7 +107,7 @@ pub struct Rate(NonZeroU16);
 impl Rate { pub const fn hz(hz: u16) -> Option<Self>; }
 ```
 
-Constants are built by a crate-private `const` constructor; a unit test checks every constant, and every element of each array constant, against the `Path` rules, so they need no runtime check. Examples:
+Constants are built by a crate-private `static_path!` macro that checks the `Path` rules in a `const` block, so an invalid constant fails the build and needs no runtime check. A unit test checks every element of each array constant, since the `[i]` suffix is added later. Examples:
 
 ```rust
 pub const PHI: Dataref<f32, Writable> = ..;                    // position, deg
