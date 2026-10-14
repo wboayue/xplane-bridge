@@ -12,7 +12,7 @@ documentation = "https://docs.rs/xplane-bridge/latest/xplane_bridge/"
 license = "MIT"
 keywords = ["xplane", "x-plane", "flight-simulator", "uav", "robotics"]
 categories = ["aerospace::simulation", "aerospace::drones", "aerospace::unmanned-aerial-vehicles", "simulation", "science::robotics"]
-include = ["src/", "README.md", "CHANGELOG.md", "LICENSE", "examples/", "!**/.DS_Store"]
+include = ["src/", "README.md", "CHANGELOG.md", "LICENSE", "examples/", "tests/", "!**/.DS_Store"]
 
 [features]
 # `testing::FakeXPlane`, for consumers' tests.
@@ -31,6 +31,7 @@ xplane-bridge = { path = ".", features = ["testing"] }
 
 [package.metadata.docs.rs]
 all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [lints.rust]
 missing_docs = "warn"
