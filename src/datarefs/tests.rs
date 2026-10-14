@@ -1,10 +1,8 @@
 use std::collections::HashSet;
 
+use super::engine::THRO_USE;
 use super::*;
 use crate::PathError;
-
-const THRO_USE: DatarefArray<f32, Writable, 16> =
-    DatarefArray::from_static("sim/flightmodel/engine/ENGN_thro_use");
 
 #[test]
 fn formats_wire_path() {
@@ -64,4 +62,11 @@ fn static_constructor_matches_runtime_constructor() {
 fn new_rejects_invalid_path() {
     let err = Dataref::<f32>::new("").unwrap_err();
     assert!(matches!(err, XPlaneError::InvalidPath(PathError::Empty)));
+}
+
+#[test]
+fn iterator_outlives_the_constant() {
+    // A const is a temporary at each use; the iterator must not borrow it.
+    let elements = THRO_USE.iter();
+    assert_eq!(elements.count(), 16);
 }

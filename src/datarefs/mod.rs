@@ -12,6 +12,11 @@ use std::marker::PhantomData;
 use crate::XPlaneError;
 use crate::path::{Path, WirePath};
 
+pub mod engine;
+pub mod joystick;
+pub mod overrides;
+pub mod position;
+pub mod time;
 mod value;
 
 pub use value::Value;
@@ -98,7 +103,6 @@ impl<T: Value, A> Dataref<T, A> {
 
     /// Constructor for constants. Call it only in a `const` item, so an invalid
     /// path fails the build.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by constants (#9)"))]
     pub(crate) const fn from_static(path: &'static str) -> Self {
         Self::from_path(Path::from_static(path), None)
     }
@@ -174,7 +178,6 @@ pub struct DatarefArray<T: Value, A, const N: usize> {
 impl<T: Value, A, const N: usize> DatarefArray<T, A, N> {
     /// Constructor for constants. Call it only in a `const` item, so an invalid
     /// path, `N = 0`, or `N > 65536` fails the build.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by constants (#9)"))]
     pub(crate) const fn from_static(base: &'static str) -> Self {
         Self {
             base: Path::from_static_array(base, N),
@@ -192,8 +195,13 @@ impl<T: Value, A, const N: usize> DatarefArray<T, A, N> {
     }
 
     /// All `N` elements in order.
-    pub fn iter(&self) -> impl Iterator<Item = Dataref<T, A>> + '_ {
-        (0..N).filter_map(|i| self.at(i))
+    pub fn iter(&self) -> impl Iterator<Item = Dataref<T, A>> + use<T, A, N> {
+        // Owns a clone of the base so the iterator outlives a constant's temporary.
+        let base = self.base.clone();
+        (0..N).filter_map(move |i| {
+            let index = u16::try_from(i).ok()?;
+            Some(Dataref::from_path(base.clone(), Some(index)))
+        })
     }
 }
 
@@ -229,5 +237,7 @@ impl<T: Value, A, const N: usize> Hash for DatarefArray<T, A, N> {
     }
 }
 
+#[cfg(test)]
+mod constants_tests;
 #[cfg(test)]
 mod tests;

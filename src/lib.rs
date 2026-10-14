@@ -7,6 +7,8 @@ pub mod datarefs;
 mod error;
 mod path;
 mod rate;
+#[cfg(test)]
+mod xplane_files;
 
 pub use codec::Datagram;
 pub use commands::Command;

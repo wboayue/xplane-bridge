@@ -172,7 +172,7 @@ Named constants for the datarefs a flight controller needs live in `datarefs`, o
 | `overrides` | `override_throttles`, `override_joystick`, `override_control_surfaces` |
 | `time` | `paused`; `total_running_time_sec` (s) |
 
-Any other dataref can be used by path with `Dataref::<f32>::new("sim/...")?` (or `Dataref::<i32, Writable>::new`, etc.), built once at startup; the path is checked there, so writes never fail on it. Commands work the same way: constants in `commands`, or `Command::new("sim/...")?`. The full list ships with X-Plane in `Resources/plugins/DataRefs.txt`.
+Any other dataref can be used by path with `Dataref::<f32>::new("sim/...")?` (or `Dataref::<i32, Writable>::new`, etc.), built once at startup; the path is checked there, so writes never fail on it. Commands work the same way: constants in `commands` (`PAUSE_TOGGLE`, `RESET_FLIGHT`), or `Command::new("sim/...")?`. The full list ships with X-Plane in `Resources/plugins/DataRefs.txt`.
 
 ## Testing
 
@@ -180,7 +180,7 @@ Any other dataref can be used by path with `Dataref::<f32>::new("sim/...")?` (or
 cargo test
 ```
 
-The codec and `Protocol` are tested without sockets (bytes in, datagrams out); the UDP driver has a few loopback tests against a fake X-Plane. Tests that need a running X-Plane are `#[ignore]`d; run them with `cargo test -- --ignored` while X-Plane is up.
+The codec and `Protocol` are tested without sockets (bytes in, datagrams out); the UDP driver has a few loopback tests against a fake X-Plane. Tests that need a running X-Plane are `#[ignore]`d; run them with `cargo test -- --ignored` while X-Plane is up. Set `XPLANE_DIR` to the X-Plane 12 install directory to also check the constants against its `DataRefs.txt` and `Commands.txt`.
 
 ## License
 

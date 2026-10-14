@@ -16,6 +16,8 @@ Design against the consumer, not speculatively. Before adding API, check stable-
 cargo build
 cargo test                          # codec + loopback bridge tests, no simulator needed
 cargo test -- --ignored             # tests that need a running X-Plane
+XPLANE_DIR=~/Library/Application\ Support/Steam/steamapps/common/X-Plane\ 12 \
+  cargo test constants_match -- --ignored   # constants vs DataRefs.txt/Commands.txt
 cargo run --example probe -- --host 127.0.0.1:49000   # spike/manual check against X-Plane
 cargo fmt
 cargo clippy --all-targets -- -D warnings
@@ -44,6 +46,7 @@ src/subscriptions.rs     Sub handles, Subscriptions (pure)
 src/frame.rs             Frame, FrameBuilder, Latest (pure)
 src/protocol/            Protocol, Stats: sans-I/O core, calls → datagrams, bytes → frames + tests.rs
 src/bridge/              DatarefSource/DatarefSink traits, udp.rs (driver), tests.rs
+src/xplane_files.rs      test-only: reads DataRefs.txt and Commands.txt
 src/testing.rs           FakeXPlane (feature `testing`)
 examples/probe.rs
 ```
@@ -58,7 +61,7 @@ examples/probe.rs
 - **Never block the caller.** `poll` drains until `WouldBlock` and returns; `write` is one `send_to`. A control loop at 250 Hz must be able to call both every tick.
 - **Only drivers touch sockets.** `Subscriptions`, `FrameBuilder`, and `Protocol` are pure and unit-tested without I/O; driver tests are a few loopback smoke tests.
 - **Codec is pure.** Encode/decode take and return byte slices or arrays; no sockets, no state. Packet layouts are in `design.md`; byte widths (400 for `RREF` paths, 500 for `DREF`) are named constants.
-- **Datarefs and commands are constants, not strings in call sites.** Add datarefs to `src/datarefs/` under the module matching their X-Plane path prefix, typed from `DataRefs.txt` (`Dataref<T, A>` or `DatarefArray<T, A, N>` with the right value type and `Writable` only if writable), with a doc comment giving units and sign; commands go in `src/commands.rs`. Verify the path against `Resources/plugins/DataRefs.txt` before adding it.
+- **Datarefs and commands are constants, not strings in call sites.** Add datarefs to `src/datarefs/` under the module matching their X-Plane path prefix, typed from `DataRefs.txt` (`Dataref<T, A>` or `DatarefArray<T, A, N>` with the right value type and `Writable` only if writable), with a doc comment giving units and sign; commands go in `src/commands.rs`. Verify the path against `Resources/plugins/DataRefs.txt` before adding it, and add the constant to the table in `src/datarefs/constants_tests.rs` (commands: `ALL` in `src/commands.rs`) so the `constants_match_*` tests cover it.
 - **Dependencies stay minimal.** `thiserror`, `log`. Dev-dependencies for tests (e.g. `approx`) are fine. Anything else needs a reason in the PR.
 - Logging: `log` crate; `info!` for lifecycle (bind, subscribe, drop), `debug!`/`trace!` inside the poll/write path. Nothing printed per tick at `info`.
 
