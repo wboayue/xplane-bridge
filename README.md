@@ -117,11 +117,22 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 `XPlaneUdpBridge` is a few dozen lines over `Protocol`; any other transport is the same loop. Send each returned `Datagram` to X-Plane, feed each received datagram to `handle`, and call `finish` once per drain. In this sketch, `my_socket` stands for your transport:
 
-```rust,ignore
+```rust
+# use std::error::Error;
+# use std::io;
+# use std::net::SocketAddr;
 use std::time::Instant;
 
 use xplane_bridge::{Protocol, Rate, datarefs};
 
+# struct MySocket;
+# impl MySocket {
+#     fn send_to(&self, bytes: &[u8], _: SocketAddr) -> io::Result<usize> { Ok(bytes.len()) }
+#     fn try_recv(&mut self) -> Option<&[u8]> { None }
+# }
+# fn main() -> Result<(), Box<dyn Error>> {
+# let mut my_socket = MySocket;
+# let xplane_addr: SocketAddr = "127.0.0.1:49000".parse()?;
 let mut proto = Protocol::new();
 
 // Calls return the datagram to send. Only `subscribe` can fail (index space exhausted).
@@ -145,6 +156,8 @@ if let Some(frame) = proto.finish() {
 for dg in proto.close() {
     my_socket.send_to(dg.as_bytes(), xplane_addr)?;
 }
+# Ok(())
+# }
 ```
 
 ### Timing

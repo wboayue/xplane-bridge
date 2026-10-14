@@ -102,4 +102,6 @@ impl Iterator for Records<'_> {
 impl ExactSizeIterator for Records<'_> {}
 
 #[cfg(test)]
+pub(crate) mod test_bytes;
+#[cfg(test)]
 mod tests;

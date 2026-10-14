@@ -27,6 +27,21 @@ pub struct Frame {
 
 impl Frame {
     /// The value for `sub`, or `None` if it did not arrive in this frame.
+    ///
+    /// ```
+    /// use std::time::Instant;
+    /// use xplane_bridge::{Frame, Protocol, Rate, datarefs};
+    ///
+    /// let mut proto = Protocol::new();
+    /// let rate = Rate::hz(10).expect("nonzero");
+    /// let (phi, _) = proto.subscribe(&datarefs::position::PHI, rate)?;
+    /// let (theta, _) = proto.subscribe(&datarefs::position::THETA, rate)?;
+    ///
+    /// let frame = Frame::empty(Instant::now()).with(phi, 12.5);
+    /// assert_eq!(frame.get(phi), Some(12.5));
+    /// assert_eq!(frame.get(theta), None);
+    /// # Ok::<(), xplane_bridge::XPlaneError>(())
+    /// ```
     pub fn get<T: Value>(&self, sub: Sub<T>) -> Option<T> {
         self.values.get(&sub.index()).copied().map(T::from_wire)
     }
@@ -68,7 +83,6 @@ pub(crate) struct FrameBuilder {
     received_at: Option<Instant>,
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "used by Protocol (#12)"))]
 impl FrameBuilder {
     pub(crate) fn new() -> Self {
         Self {
@@ -129,6 +143,25 @@ impl Latest {
 
     /// The last value for `sub` and the arrival time of its frame, or `None` if none
     /// has arrived.
+    ///
+    /// ```
+    /// use std::time::{Duration, Instant};
+    /// use xplane_bridge::{Frame, Latest, Protocol, Rate, datarefs};
+    ///
+    /// let mut proto = Protocol::new();
+    /// let rate = Rate::hz(10).expect("nonzero");
+    /// let (phi, _) = proto.subscribe(&datarefs::position::PHI, rate)?;
+    /// let (theta, _) = proto.subscribe(&datarefs::position::THETA, rate)?;
+    ///
+    /// let t0 = Instant::now();
+    /// let t1 = t0 + Duration::from_millis(10);
+    /// let mut latest = Latest::default();
+    /// latest.apply(&Frame::empty(t0).with(phi, 1.0).with(theta, 2.0));
+    /// latest.apply(&Frame::empty(t1).with(phi, 3.0));
+    /// assert_eq!(latest.get(phi), Some((3.0, t1)));
+    /// assert_eq!(latest.get(theta), Some((2.0, t0)));
+    /// # Ok::<(), xplane_bridge::XPlaneError>(())
+    /// ```
     pub fn get<T: Value>(&self, sub: Sub<T>) -> Option<(T, Instant)> {
         self.values
             .get(&sub.index())

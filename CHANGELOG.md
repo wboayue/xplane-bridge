@@ -15,3 +15,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dataref constants in `datarefs::{position, engine, joystick, overrides, time}`; `commands::PAUSE_TOGGLE` and `RESET_FLIGHT` (#9).
 - `Sub` handles and `Subscriptions` (#10).
 - `Frame` and `Latest` (#11).
+- `Protocol` and `Stats`: the sans-I/O protocol core (#12).

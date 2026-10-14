@@ -95,7 +95,7 @@ impl<T: Value, A, const N: usize> DatarefArray<T, A, N> {
     /// Element `i`, or `None` if `i >= N`.
     pub fn at(&self, i: usize) -> Option<Dataref<T, A>>;
     /// All `N` elements in order.
-    pub fn iter(&self) -> impl Iterator<Item = Dataref<T, A>> + '_;
+    pub fn iter(&self) -> impl Iterator<Item = Dataref<T, A>> + use<T, A, N>;
 }
 
 /// A command path, validated by the same `Path` rules.
@@ -166,8 +166,7 @@ impl Datagram { pub fn as_bytes(&self) -> &[u8]; }
 /// Every method is synchronous. `write` and `command` do not allocate; `handle`
 /// allocates only while the pending frame grows past its high-water mark;
 /// `finish` allocates only the `Frame` it returns.
-#[derive(Default)]
-pub struct Protocol { .. }
+pub struct Protocol { .. }   // `Default` is `new()`
 
 impl Protocol {
     pub fn new() -> Self;
@@ -200,7 +199,9 @@ impl Protocol {
     pub fn subscriptions(&self) -> &Subscriptions;
 }
 
-/// Counters since `Protocol::new`.
+/// Counters since `Protocol::new`. `packets` counts well-formed `RREF,` replies,
+/// `malformed` everything else, so received datagrams are `packets + malformed`.
+/// `resubscribes` counts calls, including with no subscriptions.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats { pub packets: u64, pub malformed: u64, pub dropped_records: u64, pub resubscribes: u64 }
 ```

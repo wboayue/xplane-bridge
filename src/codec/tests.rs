@@ -1,3 +1,4 @@
+use super::test_bytes::{dref as dref_bytes, reply, rref};
 use super::*;
 use crate::path::Path;
 
@@ -6,12 +7,6 @@ const THRO_USE: &str = "sim/flightmodel/engine/ENGN_thro_use";
 
 fn path(s: &str) -> Path {
     Path::new(s).unwrap()
-}
-
-fn padded(path: &str, width: usize) -> Vec<u8> {
-    let mut bytes = path.as_bytes().to_vec();
-    bytes.resize(width, 0);
-    bytes
 }
 
 fn max_path() -> String {
@@ -49,13 +44,7 @@ fn encodes_rref() {
     ];
     for &(hz, index, base, element, wire) in cases {
         let base = path(base);
-        let expected = [
-            b"RREF\0".as_slice(),
-            &i32::from(hz.unwrap_or(0)).to_le_bytes(),
-            &index.to_le_bytes(),
-            &padded(wire, 400),
-        ]
-        .concat();
+        let expected = rref(i32::from(hz.unwrap_or(0)), index, wire);
         let wire_path = base.wire(element);
         let got = match hz {
             Some(hz) => subscribe(Rate::hz(hz).unwrap(), index, wire_path),
@@ -83,12 +72,7 @@ fn encodes_dref() {
     ];
     for &(value, base, element, wire) in cases {
         let base = path(base);
-        let expected = [
-            b"DREF\0".as_slice(),
-            &value.to_le_bytes(),
-            &padded(wire, 500),
-        ]
-        .concat();
+        let expected = dref_bytes(value, wire);
         let got = dref(value, base.wire(element));
         assert_eq!(got.as_bytes(), expected, "path {wire}");
         assert_eq!(got.as_bytes().len(), 509);
@@ -115,15 +99,6 @@ fn path_too_long_for_its_field_is_sent_empty() {
     assert_eq!(rref.as_bytes().len(), 413);
     assert!(rref.as_bytes()[13..].iter().all(|&b| b == 0));
     assert_eq!(cmnd(over).as_bytes(), b"CMND\0\0");
-}
-
-fn reply(records: &[(i32, f32)]) -> Vec<u8> {
-    let mut bytes = b"RREF,".to_vec();
-    for (index, value) in records {
-        bytes.extend(index.to_le_bytes());
-        bytes.extend(value.to_le_bytes());
-    }
-    bytes
 }
 
 #[test]
