@@ -38,13 +38,13 @@ jobs:
       run: cargo fmt --check
 
     - name: clippy
-      run: cargo clippy --all-targets -- -D warnings
+      run: cargo clippy --all-targets --all-features -- -D warnings
 
     - name: test
       run: cargo test
 
     - name: doc
-      run: cargo doc --no-deps
+      run: cargo doc --no-deps --all-features
       env:
         RUSTDOCFLAGS: -D warnings
 

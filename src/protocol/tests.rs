@@ -4,13 +4,10 @@ use super::*;
 use crate::codec::test_bytes::{dref, reply, rref};
 use crate::commands;
 use crate::datarefs::{engine, overrides, position};
+use crate::rate::hz;
 
 const PHI: &str = "sim/flightmodel/position/phi";
 const THETA: &str = "sim/flightmodel/position/theta";
-
-fn hz(hz: u16) -> Rate {
-    Rate::hz(hz).unwrap()
-}
 
 fn bytes(datagrams: &[Datagram]) -> Vec<&[u8]> {
     datagrams.iter().map(Datagram::as_bytes).collect()

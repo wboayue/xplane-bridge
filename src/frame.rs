@@ -176,18 +176,15 @@ mod tests {
     use approx::assert_relative_eq;
 
     use super::*;
+    use crate::Subscriptions;
     use crate::datarefs::{overrides, position};
-    use crate::{Rate, Subscriptions};
-
-    fn hz() -> Rate {
-        Rate::hz(10).unwrap()
-    }
+    use crate::rate::hz;
 
     /// Handles for roll and pitch, at indices 0 and 1.
     fn subs() -> (Sub<f32>, Sub<f32>) {
         let mut subs = Subscriptions::new();
-        let phi = subs.insert(&position::PHI, hz()).unwrap();
-        let theta = subs.insert(&position::THETA, hz()).unwrap();
+        let phi = subs.insert(&position::PHI, hz(10)).unwrap();
+        let theta = subs.insert(&position::THETA, hz(10)).unwrap();
         (phi, theta)
     }
 
@@ -258,10 +255,10 @@ mod tests {
     #[test]
     fn with_round_trips_each_value_type() {
         let mut subs = Subscriptions::new();
-        let phi = subs.insert(&position::PHI, hz()).unwrap();
-        let throttles = subs.insert(&overrides::THROTTLES, hz()).unwrap();
+        let phi = subs.insert(&position::PHI, hz(10)).unwrap();
+        let throttles = subs.insert(&overrides::THROTTLES, hz(10)).unwrap();
         let count = subs
-            .insert(&crate::Dataref::<i32>::new("sim/a").unwrap(), hz())
+            .insert(&crate::Dataref::<i32>::new("sim/a").unwrap(), hz(10))
             .unwrap();
         let frame = Frame::empty(Instant::now())
             .with(phi, -12.5)

@@ -94,4 +94,5 @@ dependencies = [
  "approx",
  "log",
  "thiserror",
+ "xplane-bridge",
 ]

@@ -20,8 +20,8 @@ XPLANE_DIR=~/Library/Application\ Support/Steam/steamapps/common/X-Plane\ 12 \
   cargo test constants_match -- --ignored   # constants vs DataRefs.txt/Commands.txt
 cargo run --example probe -- --host 127.0.0.1:49000   # spike/manual check against X-Plane
 cargo fmt
-cargo clippy --all-targets -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps   # as CI runs it
+cargo clippy --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features   # as CI runs it
 
 # check a dataref path, type, writability, units (X-Plane 12 via Steam on macOS)
 awk -F'\t' '$1 == "sim/flightmodel/position/P"' \
@@ -117,4 +117,4 @@ Review every plan before presenting it, and every change before a PR, through fo
 - No AI attribution lines or footers in commits or PRs.
 - American English spelling in prose, docs, comments, and commit messages.
 - Merge after CI passes: squash with subject `Title (#issue) (#pr)` (`Title (#pr)` without an issue) and delete the branch.
-- Before a PR: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` all clean.
+- Before a PR: `cargo fmt`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features` all clean.
