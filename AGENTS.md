@@ -35,7 +35,7 @@ Rust edition 2024, MSRV 1.85.
 ```
 src/lib.rs        re-exports, crate docs
 src/error.rs             XPlaneError (thiserror)
-src/codec/               pure packet encode/decode, EncodeError/DecodeError + tests.rs
+src/codec/               pure packet encode/decode, DecodeError + tests.rs
 src/datarefs/            Dataref type and constants grouped by X-Plane prefix
 src/commands.rs          Command type and constants
 src/subscriptions.rs     Sub handles, Subscriptions (pure)
