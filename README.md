@@ -6,6 +6,7 @@
 [![License:MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![crates.io](https://img.shields.io/crates/v/xplane-bridge.svg)](https://crates.io/crates/xplane-bridge)
 [![Documentation](https://img.shields.io/docsrs/xplane-bridge)](https://docs.rs/xplane-bridge/latest/xplane_bridge/index.html)
+[![Coverage Status](https://coveralls.io/repos/github/wboayue/xplane-bridge/badge.svg?branch=main)](https://coveralls.io/github/wboayue/xplane-bridge?branch=main)
 
 ## Overview
 
