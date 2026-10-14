@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v7
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+    - uses: Swatinem/rust-cache@v2
+
+    - name: fmt
+      run: cargo fmt --check
+
+    - name: clippy
+      run: cargo clippy --all-targets -- -D warnings
+
+    - name: test
+      run: cargo test
+
+    - name: doc
+      run: cargo doc --no-deps
+      env:
+        RUSTDOCFLAGS: -D warnings
+
+  msrv:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+    # Keep in sync with rust-version in Cargo.toml
+    - uses: dtolnay/rust-toolchain@1.85
+    - uses: Swatinem/rust-cache@v2
+
+    - name: build
+      # Library only; dev-dependencies may need a newer toolchain
+      run: cargo build --lib --locked

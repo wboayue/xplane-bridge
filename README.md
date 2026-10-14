@@ -55,7 +55,7 @@ xplane-bridge = { git = "https://github.com/wboayue/xplane-bridge" }
 
 ## Usage
 
-```rust
+```rust,ignore
 use std::error::Error;
 use std::net::SocketAddr;
 use std::thread;
@@ -117,7 +117,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 `XPlaneUdpBridge` is a few dozen lines over `Protocol`; any other transport is the same loop. Send each returned `Datagram` to X-Plane, feed each received datagram to `handle`, and call `finish` once per drain. In this sketch, `my_socket` stands for your transport:
 
-```rust
+```rust,ignore
 use std::time::Instant;
 
 use xplane_bridge::{Protocol, Rate, datarefs};
@@ -184,4 +184,4 @@ The codec and `Protocol` are tested without sockets (bytes in, datagrams out); t
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](https://github.com/wboayue/xplane-bridge/blob/main/LICENSE).
