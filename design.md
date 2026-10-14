@@ -42,7 +42,7 @@ The bridge is sans-I/O: every protocol decision lives in `Protocol`, which never
 
 | Part | Module | Job | I/O |
 |---|---|---|---|
-| `Path` | `path.rs` | Validate a path once (crate-private) | none |
+| `Path`, `WirePath` | `path.rs` | Validate a path once; format its wire form, `base[i]` for an element (crate-private) | none |
 | `codec` | `codec/` | Encode `RREF`/`DREF`/`CMND`; decode `RREF,` into `(index, value)` records | none |
 | `Dataref`, `Command` | `datarefs/`, `commands.rs` | Name a path; constants | none |
 | `Rate` | `rate.rs` | Nonzero `RREF` rate | none |
@@ -334,7 +334,7 @@ Codec errors are separate from bridge errors, so the public bridge error lists o
 
 ```rust
 // codec: encoding cannot fail, because paths are validated on construction, so there is no EncodeError
-pub enum DecodeError { BadHeader, Truncated { len: usize } }   // `len` not 5 + 8k
+pub enum DecodeError { BadHeader, Truncated { len: usize } }   // BadHeader: not `RREF,`, or shorter; Truncated: `len` not 5 + 8k
 
 // bridge
 pub enum XPlaneError {

@@ -1,6 +1,8 @@
 use std::borrow::Cow;
+use std::fmt;
 
 use crate::PathError;
+use crate::codec::RREF_PATH_LEN;
 
 /// A validated dataref or command path: the one place path rules live.
 ///
@@ -9,8 +11,8 @@ use crate::PathError;
 pub(crate) struct Path(Cow<'static, str>);
 
 impl Path {
-    /// The 400-byte `RREF` path field minus its terminator.
-    pub(crate) const MAX_LEN: usize = 399;
+    /// The `RREF` path field minus its terminator.
+    pub(crate) const MAX_LEN: usize = RREF_PATH_LEN - 1;
 
     /// Validates a runtime path.
     pub(crate) fn new(path: impl Into<String>) -> Result<Self, PathError> {
@@ -40,6 +42,30 @@ impl Path {
 
     pub(crate) fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// The path as sent: itself, or element `index` of the array it names.
+    pub(crate) fn wire(&self, index: Option<u16>) -> WirePath<'_> {
+        WirePath { base: self, index }
+    }
+}
+
+/// A path as sent on the wire: `base`, or `base[i]` for an array element.
+///
+/// Its `Display` is the one place the element suffix is formatted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WirePath<'a> {
+    base: &'a Path,
+    index: Option<u16>,
+}
+
+impl fmt::Display for WirePath<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.base.as_str())?;
+        match self.index {
+            Some(i) => write!(f, "[{i}]"),
+            None => Ok(()),
+        }
     }
 }
 
@@ -123,6 +149,19 @@ mod tests {
     #[should_panic(expected = "path is empty")]
     fn from_static_rejects_invalid_path() {
         Path::from_static("");
+    }
+
+    #[test]
+    fn formats_wire_path() {
+        let base = Path::new("sim/a").unwrap();
+        let cases = [
+            (None, "sim/a"),
+            (Some(0), "sim/a[0]"),
+            (Some(65535), "sim/a[65535]"),
+        ];
+        for (index, expected) in cases {
+            assert_eq!(base.wire(index).to_string(), expected);
+        }
     }
 
     #[test]

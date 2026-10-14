@@ -10,7 +10,7 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 
 use crate::XPlaneError;
-use crate::path::Path;
+use crate::path::{Path, WirePath};
 
 mod value;
 
@@ -123,8 +123,13 @@ impl<T: Value, A> Dataref<T, A> {
     pub fn path(&self) -> Cow<'_, str> {
         match self.index {
             None => Cow::Borrowed(self.path.as_str()),
-            Some(i) => Cow::Owned(format!("{}[{i}]", self.path.as_str())),
+            Some(_) => Cow::Owned(self.wire_path().to_string()),
         }
+    }
+
+    /// The wire path, for encoding without allocating.
+    pub(crate) fn wire_path(&self) -> WirePath<'_> {
+        self.path.wire(self.index)
     }
 }
 
