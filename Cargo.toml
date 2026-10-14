@@ -1,0 +1,22 @@
+[package]
+name = "xplane-bridge"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Wil Boayue <wil@wsblabs.com>"]
+readme = "README.md"
+description = "Sans-I/O Rust library for X-Plane's UDP dataref protocol (RREF/DREF/CMND), letting external flight controllers read simulator state and drive the aircraft."
+homepage = "https://github.com/wboayue/xplane-bridge/"
+repository = "https://github.com/wboayue/xplane-bridge/"
+documentation = "https://docs.rs/xplane-bridge/latest/xplane_bridge/"
+license = "MIT"
+keywords = ["xplane", "x-plane", "flight-simulator", "uav", "robotics"]
+categories = ["aerospace::simulation", "aerospace::drones", "aerospace::unmanned-aerial-vehicles", "simulation", "science::robotics"]
+include = ["src/", "README.md", "CHANGELOG.md", "LICENSE", "examples/", "!**/.DS_Store"]
+
+[dependencies]
+thiserror = "2"
+log = "0.4"
+
+[dev-dependencies]
+approx = "0.5"
