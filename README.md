@@ -55,7 +55,7 @@ xplane-bridge = { git = "https://github.com/wboayue/xplane-bridge" }
 
 ## Usage
 
-```rust,ignore
+```rust,no_run
 use std::error::Error;
 use std::net::SocketAddr;
 use std::thread;

@@ -2,6 +2,10 @@
 
 use crate::{Command, Dataref, Frame, Rate, Stats, Sub, Value, Writable, XPlaneError};
 
+mod udp;
+
+pub use udp::XPlaneUdpBridge;
+
 /// Reads simulator state: subscriptions and the frames they produce.
 ///
 /// For static dispatch; take `impl DatarefSource`, never a driver type.
