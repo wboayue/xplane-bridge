@@ -18,6 +18,7 @@ pub const THROTTLES: Dataref<bool, Writable> =
 /// disables auto-coordination.
 pub const JOYSTICK: Dataref<bool, Writable> =
     Dataref::from_static("sim/operation/override/override_joystick");
-/// Individual control surface deflections are written directly.
+/// Control surfaces follow the [`wing`](super::wing) deflections; the stick
+/// no longer moves them.
 pub const CONTROL_SURFACES: Dataref<bool, Writable> =
     Dataref::from_static("sim/operation/override/override_control_surfaces");

@@ -95,16 +95,23 @@ fn constants() -> Vec<Entry> {
         scalar(&time::PAUSED),
         scalar(&time::TOTAL_RUNNING_TIME_SEC),
         scalar(&time::FRAMERATE_PERIOD),
+        array(&wing::AILERON1_DEG),
+        array(&wing::AILERON2_DEG),
+        array(&wing::ELEVATOR1_DEG),
+        array(&wing::ELEVATOR2_DEG),
+        array(&wing::RUDDER1_DEG),
+        array(&wing::RUDDER2_DEG),
     ]
 }
 
 /// Source of every module with constants, to catch one missing from [`constants`].
-const SOURCES: [&str; 5] = [
+const SOURCES: [&str; 6] = [
     include_str!("engine.rs"),
     include_str!("joystick.rs"),
     include_str!("overrides.rs"),
     include_str!("position.rs"),
     include_str!("time.rs"),
+    include_str!("wing.rs"),
 ];
 
 #[test]

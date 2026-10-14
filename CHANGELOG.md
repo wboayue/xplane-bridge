@@ -20,3 +20,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `XPlaneUdpBridge`: the `std::net::UdpSocket` driver (#14).
 - `probe` example and `#[ignore]`d tests against a running X-Plane (#15).
 - `datarefs::time::FRAMERATE_PERIOD`; `probe` prints frame rate and the local origin (#16).
+- `datarefs::wing`: control surface deflection constants (#35).

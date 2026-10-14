@@ -13,7 +13,7 @@
 **xplane-bridge** wraps that UDP protocol so an external flight controller can:
 
 * Subscribe to datarefs (`RREF`) and receive them every simulator frame: attitude, body rates, position, velocity, acceleration.
-* Write datarefs (`DREF`) to drive the aircraft: per-engine throttle, stick deflections, and the override flags that hand control to the bridge.
+* Write datarefs (`DREF`) to drive the aircraft: per-engine throttle, stick deflections, control surface deflections, and the override flags that hand control to the bridge.
 * Send commands (`CMND`) such as pause or reset.
 
 It is the X-Plane counterpart of [realflight-bridge](https://github.com/wboayue/realflight-bridge) and is used by the [Stable Flight](https://github.com/wboayue/stable-flight) `stable-flight-sitl-xplane` backend, but it has no dependency on either.
@@ -218,6 +218,7 @@ Named constants for the datarefs a flight controller needs live in `datarefs`, o
 | `joystick` | `yoke_roll_ratio`, `yoke_pitch_ratio`, `yoke_heading_ratio` (−1 to 1) |
 | `overrides` | `override_throttles`, `override_joystick`, `override_control_surfaces` |
 | `time` | `paused`; `total_running_time_sec` (s) |
+| `wing` | `aileron1/2_deg[48]`, `elevator1/2_deg[48]`, `rudder1/2_deg[48]` (deg, per `.acf` wing) |
 
 Any other dataref can be used by path with `Dataref::<f32>::new("sim/...")?` (or `Dataref::<i32, Writable>::new`, etc.), built once at startup; the path is checked there, so writes never fail on it. Commands work the same way: constants in `commands` (`PAUSE_TOGGLE`, `RESET_FLIGHT`), or `Command::new("sim/...")?`. The full list ships with X-Plane in `Resources/plugins/DataRefs.txt`.
 

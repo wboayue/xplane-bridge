@@ -18,6 +18,7 @@ pub mod overrides;
 pub mod position;
 pub mod time;
 mod value;
+pub mod wing;
 
 pub use value::Value;
 
