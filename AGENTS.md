@@ -19,7 +19,7 @@ cargo test -- --ignored             # tests that need a running X-Plane
 cargo run --example probe -- --host 127.0.0.1:49000   # spike/manual check against X-Plane
 cargo fmt
 cargo clippy --all-targets -- -D warnings
-cargo doc --no-deps                 # keep rustdoc warning-free
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps   # as CI runs it
 
 # check a dataref path, type, writability, units (X-Plane 12 via Steam on macOS)
 awk -F'\t' '$1 == "sim/flightmodel/position/P"' \
@@ -101,4 +101,4 @@ Docs:
 - Pass PR bodies with `gh pr create --body-file`; inline heredocs break on apostrophes.
 - No AI attribution lines or footers in commits or PRs.
 - American English spelling in prose, docs, comments, and commit messages.
-- Before a PR: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo doc --no-deps` all clean.
+- Before a PR: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` all clean.

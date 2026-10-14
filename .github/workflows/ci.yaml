@@ -8,6 +8,13 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -52,4 +59,4 @@ jobs:
 
     - name: build
       # Library only; dev-dependencies may need a newer toolchain
-      run: cargo build --lib
+      run: cargo build --lib --locked
