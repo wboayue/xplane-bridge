@@ -13,6 +13,16 @@ use crate::{Dataref, Rate, Value, XPlaneError};
 /// Valid only against frames from the `Protocol` that issued it: every
 /// `Protocol` allocates the same indices, so a handle from another one reads the
 /// wrong values without error.
+///
+/// ```
+/// use xplane_bridge::{Protocol, Rate, Sub, datarefs};
+///
+/// let mut proto = Protocol::new();
+/// let (paused, _): (Sub<bool>, _) =
+///     proto.subscribe(&datarefs::time::PAUSED, Rate::hz(1).expect("nonzero"))?;
+/// assert!(proto.subscriptions().is_active(paused));
+/// # Ok::<(), xplane_bridge::XPlaneError>(())
+/// ```
 pub struct Sub<T: Value> {
     index: i32,
     _t: PhantomData<fn() -> T>,
@@ -65,6 +75,18 @@ impl<T: Value> Hash for Sub<T> {
 /// Keyed by wire path, so an array element and the same `path[i]` built by hand
 /// share one index, as do one path under two value types. Indices are never
 /// reused, so a late packet for a removed subscription is never read as a new one.
+/// Read it through [`Protocol::subscriptions`](crate::Protocol::subscriptions).
+///
+/// ```
+/// use xplane_bridge::{Protocol, Rate, datarefs};
+///
+/// let mut proto = Protocol::new();
+/// let (phi, _) = proto.subscribe(&datarefs::position::PHI, Rate::hz(10).expect("nonzero"))?;
+/// assert_eq!(proto.subscriptions().get(&datarefs::position::PHI), Some(phi));
+/// proto.unsubscribe(phi);
+/// assert!(!proto.subscriptions().is_active(phi));
+/// # Ok::<(), xplane_bridge::XPlaneError>(())
+/// ```
 #[derive(Debug)]
 pub struct Subscriptions {
     // In index order, so `iter` and `drain` are deterministic. Path lookups scan:
@@ -73,7 +95,6 @@ pub struct Subscriptions {
     next: i32,
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "used by Protocol (#12)"))]
 impl Subscriptions {
     pub(crate) fn new() -> Self {
         Self {
