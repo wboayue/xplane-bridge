@@ -91,7 +91,7 @@ Review every plan before presenting it, and every change before a PR, through fo
 - **Duplication:** each rule, value, and piece of state lives once (see "One source of truth").
 - **SRP:** each part keeps one job (see "One job per part").
 - **Composability:** parts combine without borrowing, visibility, or type friction; consumers and later issues can use them as planned.
-- **Performance:** nothing on the per-tick path (`poll`, `handle`, `write`, `Frame::get`) allocates, hashes strings, or scans beyond what `design.md` allows.
+- **Performance:** nothing on the per-tick path (`poll`, `handle`, `write`, `Frame::get`) allocates, hashes strings, or scans beyond what `design.md` allows. Every collection is bounded by the subscription count, never by time or packet count. Optimize past that (custom hashers, reusable frames) only with a profile.
 
 ## Testing
 
@@ -101,13 +101,13 @@ Review every plan before presenting it, and every change before a PR, through fo
 - Socket behavior is tested against a loopback `UdpSocket` acting as a fake X-Plane in `src/bridge/tests.rs`; the fake replies from a different port than it listens on, as X-Plane does. Keep these to socket concerns (drain, `ConnectionReset`, drop). No mocking framework; use `testing::FakeXPlane` (built on `Protocol` and `Frame::empty(t).with(sub, value)`) rather than writing another fake.
 - Anything that needs the real simulator is `#[ignore]` with a one-line reason.
 - Name tests after the behavior they protect (`merges_drained_packets`), not the function.
-- Floats: `approx::assert_relative_eq!`.
+- Floats: `approx::assert_relative_eq!` for computed values; `assert_eq!` is fine for values passed through unchanged (stored and read back).
 
 ## Docs and releases
 
 - Public items have rustdoc with an example. If the type cannot yet be obtained outside the crate, the example lands with the API that hands it out. `README.md` is the crate docs, so its usage compiles as a doctest; change it in the same PR as the API.
 - `CHANGELOG.md` ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)): every user-facing change adds a bullet under `[Unreleased]`; mark breaking changes **Breaking**.
-- Update `design.md` when a **verify** item is confirmed or an open question is answered; don't leave it describing a protocol detail the code contradicts.
+- Update `design.md` when a **verify** item is confirmed or an open question is answered; don't leave it describing a protocol detail or API signature the code contradicts.
 - `Cargo.toml` metadata mirrors realflight-bridge (license MIT, keywords, categories, `include` list). Check `cargo package --list` before a release.
 
 ## Commits and PRs
@@ -116,5 +116,5 @@ Review every plan before presenting it, and every change before a PR, through fo
 - Pass PR bodies with `gh pr create --body-file`; inline heredocs break on apostrophes.
 - No AI attribution lines or footers in commits or PRs.
 - American English spelling in prose, docs, comments, and commit messages.
-- Merge after CI passes: squash with subject `Title (#issue) (#pr)` and delete the branch.
+- Merge after CI passes: squash with subject `Title (#issue) (#pr)` (`Title (#pr)` without an issue) and delete the branch.
 - Before a PR: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` all clean.
