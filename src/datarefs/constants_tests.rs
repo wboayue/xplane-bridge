@@ -94,6 +94,7 @@ fn constants() -> Vec<Entry> {
         scalar(&overrides::CONTROL_SURFACES),
         scalar(&time::PAUSED),
         scalar(&time::TOTAL_RUNNING_TIME_SEC),
+        scalar(&time::FRAMERATE_PERIOD),
     ]
 }
 

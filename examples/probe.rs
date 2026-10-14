@@ -1,5 +1,6 @@
-//! Prints attitude, rates, local position, pause state, and sim time from a
-//! running X-Plane at 10 Hz; the manual check against the simulator.
+//! Prints attitude, rates, local position and its origin, pause state, sim time,
+//! and frame rate from a running X-Plane at 10 Hz; the manual check against the
+//! simulator.
 //!
 //! ```text
 //! cargo run --example probe -- [--host 127.0.0.1:49000] [--spin]
@@ -22,7 +23,8 @@ use xplane_bridge::{
 
 /// Throttle for `--spin`: enough to see the motors turn, not to lift off.
 const SPIN_THROTTLE: f32 = 0.2;
-const RATE: Rate = match Rate::hz(100) {
+/// Above twice the frame rate, so every frame arrives.
+const RATE: Rate = match Rate::hz(250) {
     Some(rate) => rate,
     None => panic!("zero rate"),
 };
@@ -67,9 +69,12 @@ struct Subs {
     x: Sub<f32>,
     y: Sub<f32>,
     z: Sub<f32>,
+    lat_ref: Sub<f32>,
+    lon_ref: Sub<f32>,
     quaternion: Vec<Sub<f32>>,
     paused: Sub<bool>,
     sim_time: Sub<f32>,
+    frame_period: Sub<f32>,
 }
 
 impl Subs {
@@ -84,12 +89,15 @@ impl Subs {
             x: bridge.subscribe(&position::LOCAL_X, RATE)?,
             y: bridge.subscribe(&position::LOCAL_Y, RATE)?,
             z: bridge.subscribe(&position::LOCAL_Z, RATE)?,
+            lat_ref: bridge.subscribe(&position::LAT_REF, RATE)?,
+            lon_ref: bridge.subscribe(&position::LON_REF, RATE)?,
             quaternion: position::QUATERNION
                 .iter()
                 .map(|element| bridge.subscribe(&element, RATE))
                 .collect::<Result<_, _>>()?,
             paused: bridge.subscribe(&time::PAUSED, RATE)?,
             sim_time: bridge.subscribe(&time::TOTAL_RUNNING_TIME_SEC, RATE)?,
+            frame_period: bridge.subscribe(&time::FRAMERATE_PERIOD, RATE)?,
         })
     }
 }
@@ -182,11 +190,12 @@ fn print_line(latest: &Latest, subs: &Subs, age: Option<Duration>, stats: Stats)
         .map(|&s| format!("{:+.3}", f(s)))
         .collect();
     println!(
-        "t {:8.2}s paused {:?} | phi {:+7.2} theta {:+7.2} psi {:6.2} deg | \
-         p {:+7.2} q {:+7.2} r {:+7.2} deg/s | x {:+9.2} y {:+8.2} z {:+9.2} m | \
+        "t {:8.2}s paused {:?} fps {:5.1} | phi {:+7.2} theta {:+7.2} psi {:6.2} deg | \
+         p {:+7.2} q {:+7.2} r {:+7.2} deg/s | x {:+9.2} y {:+8.2} z {:+9.2} m origin {:.2},{:.2} | \
          quat [{}] | age {:3}ms pkts {} bad {}",
         f(subs.sim_time),
         latest.get(subs.paused).map(|(v, _)| v),
+        1.0 / f(subs.frame_period),
         f(subs.phi),
         f(subs.theta),
         f(subs.psi),
@@ -196,6 +205,8 @@ fn print_line(latest: &Latest, subs: &Subs, age: Option<Duration>, stats: Stats)
         f(subs.x),
         f(subs.y),
         f(subs.z),
+        f(subs.lat_ref),
+        f(subs.lon_ref),
         q.join(" "),
         age.map_or(0, |a| a.as_millis()),
         stats.packets,

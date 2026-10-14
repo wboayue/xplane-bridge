@@ -14,3 +14,6 @@ pub const PAUSED: Dataref<bool, ReadOnly> = Dataref::from_static("sim/time/pause
 /// Seconds since the simulator started.
 pub const TOTAL_RUNNING_TIME_SEC: Dataref<f32, Writable> =
     Dataref::from_static("sim/time/total_running_time_sec");
+/// Smoothed seconds per simulator frame; the frame rate is its reciprocal.
+pub const FRAMERATE_PERIOD: Dataref<f32, ReadOnly> =
+    Dataref::from_static("sim/time/framerate_period");

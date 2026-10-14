@@ -68,10 +68,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let addr: SocketAddr = "127.0.0.1:49000".parse()?;
     let mut bridge = XPlaneUdpBridge::connect(addr)?;
 
-    // Ask X-Plane to stream roll and roll rate at up to 100 Hz
-    // (it sends at most once per simulator frame). Each handle is typed:
-    // `Sub<f32>` here, because both are `f32` datarefs.
-    let rate = Rate::hz(100).expect("nonzero rate");
+    // Ask X-Plane to stream roll and roll rate every simulator frame: it sends
+    // at most once per frame, so ask for well above the frame rate. Each handle
+    // is typed: `Sub<f32>` here, because both are `f32` datarefs.
+    let rate = Rate::hz(250).expect("nonzero rate");
     let phi = bridge.subscribe(&datarefs::position::PHI, rate)?;
     let p = bridge.subscribe(&datarefs::position::P, rate)?;
 
@@ -196,7 +196,7 @@ assert!(fake.poll().is_err());
 
 ### Timing
 
-X-Plane emits subscribed datarefs once per rendered frame, so the state rate is bounded by the simulator's frame rate (typically 60–120 Hz) regardless of the rate requested. A controller running faster than that gets `None` from `poll` when nothing new has arrived; one running slower gets every packet since the last poll merged into one frame, newest value per dataref. A frame holds only what arrived, stamped with `received_at` (arrival of its last packet); `Latest` keeps the last known value of each subscription across frames. The simulator is not stepped by the bridge: there is no lockstep mode, so runs are not deterministic.
+X-Plane emits subscribed datarefs at most once per rendered frame, so the state rate is bounded by the simulator's frame rate (typically 60–120 Hz) regardless of the rate requested. Below that, it sends a dataref on the first frame at least `1/rate` after the last send, so delivery rounds down to whole frames: at 120 fps, 100 Hz arrives at 60 Hz. For every frame, request at least twice the frame rate. A controller running faster than that gets `None` from `poll` when nothing new has arrived; one running slower gets every packet since the last poll merged into one frame, newest value per dataref. A frame holds only what arrived, stamped with `received_at` (arrival of its last packet); `Latest` keeps the last known value of each subscription across frames. The simulator is not stepped by the bridge: there is no lockstep mode, so runs are not deterministic.
 
 ### Liveness
 
