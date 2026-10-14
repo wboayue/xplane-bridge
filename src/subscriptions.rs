@@ -169,10 +169,7 @@ mod tests {
     use super::*;
     use crate::Writable;
     use crate::datarefs::{engine, overrides, position};
-
-    fn hz(hz: u16) -> Rate {
-        Rate::hz(hz).unwrap()
-    }
+    use crate::rate::hz;
 
     #[test]
     fn reuses_handle_and_updates_rate_on_resubscribe() {

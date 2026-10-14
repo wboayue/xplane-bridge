@@ -35,6 +35,12 @@ impl Rate {
     }
 }
 
+/// A nonzero rate, for tests.
+#[cfg(test)]
+pub(crate) fn hz(hz: u16) -> Rate {
+    Rate::hz(hz).unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

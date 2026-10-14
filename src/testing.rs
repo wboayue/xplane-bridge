@@ -13,7 +13,8 @@ use crate::{
 ///
 /// Subscriptions go through a real [`Protocol`], so handles, re-subscribe reuse,
 /// and [`Stats::resubscribes`] behave as with X-Plane. Frames are returned as
-/// queued, bypassing [`Protocol::handle`], so `Stats::packets`,
+/// queued, bypassing [`Protocol::handle`]: values for a removed subscription are
+/// still returned, where X-Plane's would be dropped, and `Stats::packets`,
 /// `Stats::malformed`, and `Stats::dropped_records` stay 0.
 ///
 /// ```
@@ -231,10 +232,7 @@ mod tests {
     use super::*;
     use crate::commands;
     use crate::datarefs::{engine, overrides, position};
-
-    fn hz() -> Rate {
-        Rate::hz(10).unwrap()
-    }
+    use crate::rate::hz;
 
     #[test]
     fn is_send_for_consumers_that_move_bridges_across_threads() {
@@ -245,7 +243,7 @@ mod tests {
     #[test]
     fn poll_returns_queued_frames_then_silence() {
         let mut fake = FakeXPlane::new();
-        let phi = fake.subscribe(&position::PHI, hz()).unwrap();
+        let phi = fake.subscribe(&position::PHI, hz(10)).unwrap();
         let t = Instant::now();
         fake.push_frame(Frame::empty(t).with(phi, 1.0));
         fake.push_silence();
@@ -305,12 +303,12 @@ mod tests {
     #[test]
     fn failure_blocks_every_call_until_cleared() {
         let mut fake = FakeXPlane::new();
-        let phi = fake.subscribe(&position::PHI, hz()).unwrap();
+        let phi = fake.subscribe(&position::PHI, hz(10)).unwrap();
         fake.push_frame(Frame::empty(Instant::now()).with(phi, 1.0));
         fake.fail_with(Some(ErrorKind::ConnectionReset));
 
         let is_reset = |r: Result<(), XPlaneError>| matches!(r, Err(XPlaneError::Io(e)) if e.kind() == ErrorKind::ConnectionReset);
-        assert!(is_reset(fake.subscribe(&position::THETA, hz()).map(drop)));
+        assert!(is_reset(fake.subscribe(&position::THETA, hz(10)).map(drop)));
         assert!(is_reset(fake.unsubscribe(phi)));
         assert!(is_reset(fake.poll().map(drop)));
         assert!(is_reset(fake.resubscribe()));
@@ -329,12 +327,12 @@ mod tests {
     #[test]
     fn resubscribe_counts_in_stats_and_keeps_handles() {
         let mut fake = FakeXPlane::new();
-        let phi = fake.subscribe(&position::PHI, hz()).unwrap();
+        let phi = fake.subscribe(&position::PHI, hz(10)).unwrap();
         fake.resubscribe().unwrap();
         fake.resubscribe().unwrap();
         assert_eq!(fake.stats().resubscribes, 2);
         assert!(fake.subscriptions().is_active(phi));
-        assert_eq!(fake.subscribe(&position::PHI, hz()).unwrap(), phi);
+        assert_eq!(fake.subscribe(&position::PHI, hz(10)).unwrap(), phi);
 
         fake.unsubscribe(phi).unwrap();
         fake.unsubscribe(phi).unwrap();
@@ -407,7 +405,7 @@ mod tests {
             polls: 0,
             writes: 0,
         };
-        let phi = bridge.subscribe(&position::PHI, hz()).unwrap();
+        let phi = bridge.subscribe(&position::PHI, hz(10)).unwrap();
         bridge
             .inner
             .push_frame(Frame::empty(Instant::now()).with(phi, 3.0));
