@@ -10,3 +10,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `XPlaneError` and `PathError` (#6).
+- `Value`, `Dataref`, `DatarefArray`, `ReadOnly`, `Writable`, `Command`, and `Rate` (#7).
