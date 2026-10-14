@@ -204,6 +204,20 @@ impl Protocol {
         self.frames.finish()
     }
 
+    /// Records that the transport dropped an outgoing datagram (its send buffer
+    /// was full), in [`Stats::dropped_sends`].
+    ///
+    /// ```
+    /// use xplane_bridge::Protocol;
+    ///
+    /// let mut proto = Protocol::new();
+    /// proto.dropped_send();
+    /// assert_eq!(proto.stats().dropped_sends, 1);
+    /// ```
+    pub fn dropped_send(&mut self) {
+        self.stats.dropped_sends += 1;
+    }
+
     /// Counters since [`new`](Self::new).
     ///
     /// ```
@@ -254,6 +268,10 @@ pub struct Stats {
     pub dropped_records: u64,
     /// Calls to [`Protocol::resubscribe`].
     pub resubscribes: u64,
+    /// Outgoing datagrams the transport dropped, recorded through
+    /// [`Protocol::dropped_send`]. A dropped `RREF` stays missing until
+    /// [`Protocol::resubscribe`]; a dropped `DREF` until the next write.
+    pub dropped_sends: u64,
 }
 
 #[cfg(test)]

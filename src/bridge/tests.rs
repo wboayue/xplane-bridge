@@ -4,7 +4,7 @@
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
-use super::XPlaneUdpBridge;
+use super::{SEND_BUFFER, XPlaneUdpBridge};
 use crate::codec::test_bytes::{cmnd, dref, reply, rref};
 use crate::datarefs::{overrides, position};
 use crate::rate::hz;
@@ -67,11 +67,28 @@ fn poll_until(
 fn binds_unspecified_address_of_target_family() {
     let cases: [(&str, &str); 2] = [("127.0.0.1:49000", "0.0.0.0"), ("[::1]:49000", "::")];
     for (target, local) in cases {
-        let bridge = XPlaneUdpBridge::connect(target.parse().unwrap()).unwrap();
+        let bridge = XPlaneUdpBridge::connect(target).unwrap();
         let bound = bridge.sock.local_addr().unwrap();
         assert_eq!(bound.ip().to_string(), local, "target {target}");
         assert_ne!(bound.port(), 0, "target {target}");
     }
+}
+
+#[test]
+fn enlarges_send_buffer() {
+    let bridge = XPlaneUdpBridge::connect("127.0.0.1:49000").unwrap();
+    let size = socket2::SockRef::from(&bridge.sock)
+        .send_buffer_size()
+        .unwrap();
+    assert!(size >= SEND_BUFFER, "send buffer {size}");
+}
+
+#[test]
+fn resolves_hostname_to_ipv4() {
+    let sim = FakeSim::new();
+    let mut bridge = XPlaneUdpBridge::connect(("localhost", sim.addr().port())).unwrap();
+    bridge.subscribe(&position::PHI, hz(100)).unwrap();
+    assert_eq!(sim.recv().0, rref(100, 0, &position::PHI.path()));
 }
 
 #[test]

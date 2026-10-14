@@ -3,14 +3,13 @@
 //! simulator.
 //!
 //! ```text
-//! cargo run --example probe -- [--host 127.0.0.1:49000] [--spin]
+//! cargo run --example probe -- [--host oya.local:49000] [--spin]
 //! ```
 //!
 //! `--spin` overrides the throttles and holds every engine at [`SPIN_THROTTLE`];
 //! Ctrl-C releases the override before exiting.
 
 use std::error::Error;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -33,26 +32,30 @@ const TICK: Duration = Duration::from_millis(4);
 const REPORT_EVERY: Duration = Duration::from_millis(100);
 /// Silence after which the probe resubscribes, for a late-started X-Plane.
 const SILENCE: Duration = Duration::from_secs(1);
+/// Resubscribe interval while some subscription has no value yet: X-Plane can
+/// drop `RREF`s that arrive in a burst.
+const INCOMPLETE: Duration = Duration::from_millis(250);
 
 struct Args {
-    host: SocketAddr,
+    host: String,
     spin: bool,
 }
 
 fn parse_args() -> Result<Args, Box<dyn Error>> {
     let mut args = Args {
-        host: "127.0.0.1:49000".parse()?,
+        host: "127.0.0.1:49000".into(),
         spin: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--host" => args.host = it.next().ok_or("--host needs an address")?.parse()?,
+            "--host" => args.host = it.next().ok_or("--host needs an address")?,
             "--spin" => args.spin = true,
             _ => {
-                return Err(
-                    format!("unknown argument {arg}; usage: probe [--host ADDR] [--spin]").into(),
-                );
+                return Err(format!(
+                    "unknown argument {arg}; usage: probe [--host HOST:PORT] [--spin]"
+                )
+                .into());
             }
         }
     }
@@ -100,6 +103,31 @@ impl Subs {
             frame_period: bridge.subscribe(&time::FRAMERATE_PERIOD, RATE)?,
         })
     }
+
+    /// How many subscriptions have no value yet.
+    fn missing(&self, latest: &Latest) -> usize {
+        let floats = [
+            self.phi,
+            self.theta,
+            self.psi,
+            self.p,
+            self.q,
+            self.r,
+            self.x,
+            self.y,
+            self.z,
+            self.lat_ref,
+            self.lon_ref,
+            self.sim_time,
+            self.frame_period,
+        ];
+        let missing_floats = floats
+            .iter()
+            .chain(&self.quaternion)
+            .filter(|&&sub| latest.get(sub).is_none())
+            .count();
+        missing_floats + usize::from(latest.get(self.paused).is_none())
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -108,7 +136,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let handler_stop = Arc::clone(&stop);
     ctrlc::set_handler(move || handler_stop.store(true, Ordering::Relaxed))?;
 
-    let mut bridge = XPlaneUdpBridge::connect(args.host)?;
+    let mut bridge = XPlaneUdpBridge::connect(args.host.as_str())?;
     println!("probing X-Plane at {}; Ctrl-C to stop", args.host);
 
     if args.spin {
@@ -153,10 +181,15 @@ fn run(
 
         let now = Instant::now();
         let silent = last_frame.is_none_or(|t| now - t > SILENCE);
+        let missing = subs.missing(&latest);
         if silent && now - last_resubscribe > SILENCE {
             bridge.resubscribe()?;
             last_resubscribe = now;
             println!("no data for {SILENCE:?}; resubscribed");
+        } else if !silent && missing > 0 && now - last_resubscribe > INCOMPLETE {
+            bridge.resubscribe()?;
+            last_resubscribe = now;
+            println!("{missing} subscriptions without a value; resubscribed");
         }
 
         if now - last_print >= REPORT_EVERY {
@@ -192,7 +225,7 @@ fn print_line(latest: &Latest, subs: &Subs, age: Option<Duration>, stats: Stats)
     println!(
         "t {:8.2}s paused {:?} fps {:5.1} | phi {:+7.2} theta {:+7.2} psi {:6.2} deg | \
          p {:+7.2} q {:+7.2} r {:+7.2} deg/s | x {:+9.2} y {:+8.2} z {:+9.2} m origin {:.2},{:.2} | \
-         quat [{}] | age {:3}ms pkts {} bad {}",
+         quat [{}] | age {:3}ms pkts {} bad {} drops {}",
         f(subs.sim_time),
         latest.get(subs.paused).map(|(v, _)| v),
         1.0 / f(subs.frame_period),
@@ -211,5 +244,6 @@ fn print_line(latest: &Latest, subs: &Subs, age: Option<Duration>, stats: Stats)
         age.map_or(0, |a| a.as_millis()),
         stats.packets,
         stats.malformed,
+        stats.dropped_sends,
     );
 }

@@ -2,7 +2,6 @@
 //! `cargo test --test xplane -- --ignored`.
 
 use std::error::Error;
-use std::net::SocketAddr;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -16,9 +15,7 @@ const RATE: Rate = match Rate::hz(100) {
 };
 
 fn connect() -> Result<XPlaneUdpBridge, Box<dyn Error>> {
-    let addr: SocketAddr = std::env::var("XPLANE_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:49000".into())
-        .parse()?;
+    let addr = std::env::var("XPLANE_ADDR").unwrap_or_else(|_| "127.0.0.1:49000".into());
     Ok(XPlaneUdpBridge::connect(addr)?)
 }
 

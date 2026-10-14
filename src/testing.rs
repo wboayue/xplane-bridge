@@ -15,7 +15,8 @@ use crate::{
 /// and [`Stats::resubscribes`] behave as with X-Plane. Frames are returned as
 /// queued, bypassing [`Protocol::handle`]: values for a removed subscription are
 /// still returned, where X-Plane's would be dropped, and `Stats::packets`,
-/// `Stats::malformed`, and `Stats::dropped_records` stay 0.
+/// `Stats::malformed`, `Stats::dropped_records`, and `Stats::dropped_sends`
+/// stay 0.
 ///
 /// ```
 /// use std::time::Instant;
