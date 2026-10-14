@@ -137,10 +137,12 @@ impl Subscriptions {
     pub(crate) fn insert<T: Value, A>(&mut self, dataref: &Dataref<T, A>, rate: Rate) -> Result<Sub<T>, XPlaneError>;
     /// Remove `sub`, returning its wire path, or `None` if not active.
     pub(crate) fn remove<T: Value>(&mut self, sub: Sub<T>) -> Option<Cow<'static, str>>;
-    /// Remove every active subscription (shutdown).
-    pub(crate) fn drain(&mut self) -> impl Iterator<Item = (i32, Cow<'static, str>)> + '_;
+    /// Remove every active subscription (shutdown). The iterator owns what it removed.
+    pub(crate) fn drain(&mut self) -> impl Iterator<Item = (i32, Cow<'static, str>)> + use<>;
     /// Every active subscription with its wire path, for `resubscribe`.
     pub(crate) fn iter(&self) -> impl Iterator<Item = (i32, &str, Rate)> + '_;
+    /// Whether a received record's index is active, for `Protocol::handle`.
+    pub(crate) fn contains(&self, index: i32) -> bool;
 
     pub fn is_active<T: Value>(&self, sub: Sub<T>) -> bool;
     pub fn get<T: Value, A>(&self, dataref: &Dataref<T, A>) -> Option<Sub<T>>;

@@ -135,6 +135,11 @@ impl<T: Value, A> Dataref<T, A> {
     pub(crate) fn wire_path(&self) -> WirePath<'_> {
         self.path.wire(self.index)
     }
+
+    /// The wire path as an owned key; see [`Path::key`].
+    pub(crate) fn key(&self) -> Cow<'static, str> {
+        self.path.key(self.index)
+    }
 }
 
 impl<T: Value, A> Clone for Dataref<T, A> {

@@ -48,6 +48,15 @@ impl Path {
     pub(crate) fn wire(&self, index: Option<u16>) -> WirePath<'_> {
         WirePath { base: self, index }
     }
+
+    /// The wire path as an owned key. A scalar constant's key borrows its
+    /// `'static` path; only an element is formatted.
+    pub(crate) fn key(&self, index: Option<u16>) -> Cow<'static, str> {
+        match index {
+            None => self.0.clone(),
+            Some(_) => Cow::Owned(self.wire(index).to_string()),
+        }
+    }
 }
 
 /// A path as sent on the wire: `base`, or `base[i]` for an array element.
@@ -162,6 +171,18 @@ mod tests {
         for (index, expected) in cases {
             assert_eq!(base.wire(index).to_string(), expected);
         }
+    }
+
+    #[test]
+    fn key_borrows_scalar_constant_and_formats_element() {
+        const PHI: Path = Path::from_static("sim/flightmodel/position/phi");
+        assert!(matches!(
+            PHI.key(None),
+            Cow::Borrowed("sim/flightmodel/position/phi")
+        ));
+        let element = PHI.key(Some(3));
+        assert!(matches!(element, Cow::Owned(_)));
+        assert_eq!(element, "sim/flightmodel/position/phi[3]");
     }
 
     #[test]

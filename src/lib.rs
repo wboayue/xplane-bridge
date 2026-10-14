@@ -7,6 +7,7 @@ pub mod datarefs;
 mod error;
 mod path;
 mod rate;
+mod subscriptions;
 #[cfg(test)]
 mod xplane_files;
 
@@ -15,3 +16,4 @@ pub use commands::Command;
 pub use datarefs::{Dataref, DatarefArray, ReadOnly, Value, Writable};
 pub use error::{PathError, XPlaneError};
 pub use rate::Rate;
+pub use subscriptions::{Sub, Subscriptions};
