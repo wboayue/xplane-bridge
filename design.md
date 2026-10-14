@@ -231,8 +231,8 @@ impl Frame {
 impl FrameBuilder {
     /// Fold one packet's records in; later records overwrite earlier ones.
     /// Knows nothing of `Subscriptions`; `Protocol` filters before pushing.
-    pub(crate) fn push(&mut self, records: impl Iterator<Item = (i32, f32)>, at: Instant);
-    /// The merged frame, or `None` if nothing was pushed. Resets the builder.
+    pub(crate) fn push(&mut self, records: impl IntoIterator<Item = (i32, f32)>, at: Instant);
+    /// The merged frame, or `None` if no record was pushed. Resets the builder.
     pub(crate) fn finish(&mut self) -> Option<Frame>;
 }
 
@@ -243,7 +243,7 @@ impl Latest {
 }
 ```
 
-Storage stays raw `f32` keyed by index, as it came off the wire; conversion happens in `get`, where the handle supplies the type. A `Frame` reports only what arrived; a `Sub` absent from it (rate below poll rate, or a split reply that skipped it) reads `None`. Callers who want held values compose `Latest` on top instead of each writing their own cache. Merging every packet in a drain, rather than keeping the newest, is what keeps slower subscriptions and split replies intact.
+Storage stays raw `f32` keyed by index, as it came off the wire; conversion happens in `get`, where the handle supplies the type. A `Frame` reports only what arrived; a `Sub` absent from it (rate below poll rate, or a split reply that skipped it) reads `None`. Callers who want held values compose `Latest` on top instead of each writing their own cache. Merging every packet in a drain, rather than keeping the newest, is what keeps slower subscriptions and split replies intact. A drain whose datagrams carried no kept records (all for removed subscriptions, say) yields no frame, so a `Frame` always means values arrived; `Stats::packets` shows the simulator is sending at all.
 
 ### Traits
 

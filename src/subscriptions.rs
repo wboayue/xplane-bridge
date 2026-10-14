@@ -27,7 +27,6 @@ impl<T: Value> Sub<T> {
     }
 
     /// The `RREF` index.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by Frame (#11)"))]
     pub(crate) const fn index(self) -> i32 {
         self.index
     }
